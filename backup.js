@@ -2,14 +2,13 @@
 // Each run creates one new branch named by date and time, holding one folder
 // per instance. Uses GitHub's REST API, so no git binary is needed.
 import fs from 'node:fs';
+import { github, normalizeRepo, REPO_RE } from './github.js';
 
-const GITHUB_API = (process.env.GITHUB_API || 'https://api.github.com').replace(/\/$/, '');
 const HISTORY_SIZE = 30;
 const HOUR_STEPS = [1, 2, 3, 4, 6, 8, 12];
 
 export const DEFAULT_SETTINGS = {
   repo: '',
-  tokenSecret: null,
   branchPrefix: 'backup/',
   schedule: { mode: 'daily', time: '00:00', everyHours: 6, weekday: 0 },
   loginUser: '',
@@ -36,7 +35,8 @@ export function nextRun(schedule, from = new Date()) {
   };
   if (schedule.mode === 'hours') {
     // Every N hours counted from midnight: N=6 runs at 00:00, 06:00, 12:00, 18:00.
-    const every = schedule.everyHours;
+    // A hand-edited file with 0 or junk here would otherwise loop forever.
+    const every = HOUR_STEPS.includes(Number(schedule.everyHours)) ? Number(schedule.everyHours) : 6;
     for (let day = 0; day <= 1; day++) {
       for (let hour = 0; hour < 24; hour += every) {
         const t = at(from, day, hour, 0);
@@ -59,8 +59,8 @@ export function nextRun(schedule, from = new Date()) {
 export function validateSettings(input, current) {
   const out = { ...current };
   if (input.repo !== undefined) {
-    const repo = String(input.repo).trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
-    if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('Repository must look like owner/name.');
+    const repo = normalizeRepo(input.repo);
+    if (repo && !REPO_RE.test(repo)) throw new Error('Repository must look like owner/name.');
     out.repo = repo;
   }
   if (input.branchPrefix !== undefined) {
@@ -82,28 +82,6 @@ export function validateSettings(input, current) {
   }
   if (input.loginUser !== undefined) out.loginUser = String(input.loginUser).trim();
   return out;
-}
-
-async function github(token, method, path, body) {
-  const res = await fetch(`${GITHUB_API}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'nodered-user-admin',
-      ...(body && { 'Content-Type': 'application/json' }),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30000),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(`GitHub ${method} ${path.split('?')[0]}: ${res.status} ${data.message || res.statusText}`);
-    err.status = res.status;
-    throw err;
-  }
-  return data;
 }
 
 // Checks the token can push to the repo and that the repo is private.
@@ -170,7 +148,7 @@ async function baseCommit(token, repo, defaultBranch) {
   }
 }
 
-export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, probeHost, defaultCredentials }) {
+export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, defaultCredentials }) {
   let running = false;
   let nextRunAt = null;
 
@@ -190,7 +168,7 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
   }
 
   const reschedule = (settings = load()) => {
-    nextRunAt = settings.repo && settings.tokenSecret ? nextRun(settings.schedule) : null;
+    nextRunAt = settings.repo && isConnected() ? nextRun(settings.schedule) : null;
   };
 
   function credentialsFor(settings) {
@@ -205,7 +183,7 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
     const s = load();
     return {
       repo: s.repo,
-      tokenSet: Boolean(s.tokenSecret),
+      githubConnected: isConnected(),
       branchPrefix: s.branchPrefix,
       schedule: s.schedule,
       loginUser: s.loginUser,
@@ -222,16 +200,13 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
   function update(input) {
     const current = load();
     const next = validateSettings(input, current);
-    if (input.token !== undefined && input.token !== '') {
-      if (!hasKey()) throw new Error('The password key is missing, so the token cannot be stored safely.');
-      next.tokenSecret = encrypt(String(input.token).trim());
-    }
-    if (input.clearToken) next.tokenSecret = null;
     if (input.loginPassword !== undefined && input.loginPassword !== '') {
       if (!hasKey()) throw new Error('The password key is missing, so the login cannot be stored safely.');
       next.loginSecret = encrypt(String(input.loginPassword));
     }
     if (input.loginUser === '') next.loginSecret = null;
+    // A new login name without a new password would pair it with the old user's password.
+    else if (next.loginUser !== current.loginUser && !input.loginPassword) next.loginSecret = null;
     save(next);
     reschedule(next);
     return publicState();
@@ -239,8 +214,8 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
 
   async function test() {
     const s = load();
-    if (!s.repo || !s.tokenSecret) throw new Error('Set the repository and token first.');
-    const { htmlUrl } = await checkRepo(decrypt(s.tokenSecret), s.repo);
+    if (!s.repo) throw new Error('Choose a backup repository first.');
+    const { htmlUrl } = await checkRepo(getToken(), s.repo);
     return { ok: true, message: `Connected to ${s.repo}, a private repository.`, url: htmlUrl };
   }
 
@@ -251,8 +226,8 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
     const entry = { at: startedAt.toISOString(), trigger, ok: false, branch: null, url: null, instances: [], message: '' };
     try {
       const s = load();
-      if (!s.repo || !s.tokenSecret) throw new Error('Backups are not set up: repository or token missing.');
-      const token = decrypt(s.tokenSecret);
+      if (!s.repo) throw new Error('Backups are not set up: no repository chosen.');
+      const token = getToken();
       const { defaultBranch, htmlUrl } = await checkRepo(token, s.repo);
 
       const { instances } = await listInstances();
@@ -304,8 +279,19 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
         entry.instances.map((i) => `- ${i.name} (:${i.port}): ${i.ok ? `${i.nodes} nodes` : `FAILED, ${i.error}`}`).join('\n');
       const commit = await github(token, 'POST', `/repos/${s.repo}/git/commits`, { message, tree: tree.sha, parents: [parent] });
 
-      const branch = `${s.branchPrefix}${branchStamp(startedAt)}`;
-      await github(token, 'POST', `/repos/${s.repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: commit.sha });
+      // Two runs in the same second (a manual one right after the schedule)
+      // would want the same name; GitHub answers 422, so add -2, -3...
+      const stamp = `${s.branchPrefix}${branchStamp(startedAt)}`;
+      let branch = stamp;
+      for (let n = 2; ; n++) {
+        try {
+          await github(token, 'POST', `/repos/${s.repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: commit.sha });
+          break;
+        } catch (e) {
+          if (e.status !== 422 || n > 5) throw e;
+          branch = `${stamp}-${n}`;
+        }
+      }
 
       Object.assign(entry, {
         ok: true,
@@ -331,11 +317,13 @@ export function createBackups({ file, encrypt, decrypt, hasKey, listInstances, p
     setInterval(() => {
       if (!nextRunAt || Date.now() < nextRunAt.getTime()) return;
       const due = nextRunAt;
-      // Book the following slot first, so a slow run can't trigger twice.
-      nextRunAt = nextRun(load().schedule, new Date(due.getTime() + 1000));
+      // Book the following slot first, so a slow run can't trigger twice. Count
+      // from now, not from the missed slot, so waking from a long sleep runs once
+      // instead of catching up every missed slot 20 seconds apart.
+      nextRunAt = nextRun(load().schedule, new Date(Math.max(Date.now(), due.getTime() + 1000)));
       run('schedule').catch((e) => console.error('[backup]', e));
     }, 20000).unref();
   }
 
-  return { publicState, update, test, run, start };
+  return { publicState, update, test, run, start, reschedule: () => reschedule() };
 }

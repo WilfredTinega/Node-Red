@@ -1,0 +1,48 @@
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.nowrap { white-space: nowrap; }
+
+.users-table tr.has-error td { border-bottom: 0; }
+.users-table tr.row-error td { padding-top: 0; }
+.users-table tr.row-error .error { margin: 0; }
+
+.instances-button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 400; }
+.disabled-wrap { display: inline-flex; }
+
+.pw-cell { display: inline-grid; gap: 2px; }
+
+.grid.add-user { max-width: 560px; }
+.choice legend { padding: 0; margin-bottom: 2px; }
+
+.instance-choice { gap: 8px; }
+.access-rows { display: grid; gap: 2px; margin-top: 4px; border-top: 1px solid var(--border); }
+.access-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.access-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.access-name > span:first-child { font-weight: 500; overflow-wrap: anywhere; }
+.access-row .select-button { flex: none; }
+.warn-text { flex-basis: 100%; font-size: 13px; color: var(--danger); }
+
+@media (max-width: 520px) {
+  .access-row { flex-direction: column; align-items: stretch; }
+  .access-row .select-button { width: 100%; }
+}
+
+/* .main is a grid; without this a wide table stretches the page past the viewport. */
+.page-card { min-width: 0; }
+.users-table th { position: relative; }

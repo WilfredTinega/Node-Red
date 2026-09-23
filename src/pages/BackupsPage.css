@@ -1,0 +1,36 @@
+/* Backups page. Status dots and the repo picker come from GithubPage.css. */
+
+.bk-status p { margin: 0 0 4px; }
+.bk-result { display: grid; gap: 4px; justify-items: start; color: var(--text); }
+.bk-result code { overflow-wrap: anywhere; }
+
+.bk-instances { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.bk-instances li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.bk-instances .error { margin: 0; overflow-wrap: anywhere; }
+
+.bk-form { display: grid; gap: 16px; max-width: 560px; }
+.bk-form p { margin: 2px 0 0; }
+.bk-form .error { margin: 2px 0 0; font-size: 14px; }
+.bk-hint { color: var(--muted); font-size: 14px; }
+.bk-hint code { overflow-wrap: anywhere; }
+
+.bk-schedule { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.bk-schedule > .field { flex: 1 1 160px; }
+.bk-schedule > .bk-mode { flex: 0 1 200px; }
+.bk-schedule > .bk-time { flex: 0 1 110px; }
+
+.bk-login { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px 14px; margin: 0; min-width: 0; display: grid; gap: 8px; }
+.bk-login legend { font-weight: 500; padding: 0 4px; }
+.bk-login p { margin: 0; }
+.bk-login-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.bk-login-row > .field { flex: 1 1 180px; }
+
+.bk-save { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.bk-save .ok { margin: 0; }
+
+.bk-history td { vertical-align: top; }
+.bk-nowrap, .bk-history code { white-space: nowrap; }
+.bk-cell-error { color: var(--danger); font-size: 13px; min-width: 200px; max-width: 320px; overflow-wrap: anywhere; margin-top: 2px; }
+.bk-details summary { cursor: pointer; white-space: nowrap; }
+.bk-details[open] summary { margin-bottom: 4px; }
+.bk-details .bk-instances { min-width: 220px; font-size: 14px; }

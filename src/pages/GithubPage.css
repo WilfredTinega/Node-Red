@@ -1,0 +1,92 @@
+/* GitHub page, plus the repo picker and status colours the Backups page reuses. */
+
+/* ---------- status dots ---------- */
+/* Grid items default to min-width:auto, which lets a wide table stretch the page. */
+.gh-card, .bk-card { min-width: 0; }
+.status.success .dot { background: var(--ok); }
+.status.failed .dot { background: var(--danger); }
+.status.busy .dot { background: var(--muted); animation: gh-pulse 1.2s ease-in-out infinite; }
+@keyframes gh-pulse {
+  50% { opacity: 0.3; }
+}
+
+/* ---------- account ---------- */
+.gh-account { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.gh-avatar { border-radius: 50%; border: 1px solid var(--border); flex: none; }
+.gh-account-text { display: grid; gap: 1px; min-width: 0; }
+.gh-account-text > * { overflow-wrap: anywhere; }
+.gh-account-action { margin-left: auto; }
+.gh-connect { max-width: 520px; }
+.gh-scopes { color: var(--muted); font-size: 14px; }
+.gh-scopes p { margin: 0 0 4px; }
+.gh-scopes ul { margin: 0 0 6px; padding-left: 20px; display: grid; gap: 2px; }
+.gh-scopes code, .gh-details code, .bk-form code { font-size: 13px; }
+
+/* ---------- dashboard updates ---------- */
+.gh-repo-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.gh-repo-form fieldset:disabled { opacity: 0.55; }
+.gh-repo-field { flex: 2 1 260px; }
+.gh-branch-field { flex: 1 1 140px; }
+.gh-save { flex: none; }
+.gh-status { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.gh-details dd { overflow-wrap: anywhere; }
+.gh-state { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.gh-state .tag { margin-left: 0; }
+.tag.gh-available { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.gh-building { color: inherit; text-decoration: none; }
+.gh-building:hover { text-decoration: underline; }
+.gh-last-update { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.gh-update-row { margin-top: 12px; }
+
+.card.gh-updating { display: grid; justify-items: center; text-align: center; gap: 8px; padding: 48px 20px; }
+.gh-updating h2 { margin: 0; }
+.gh-updating p { margin: 0; }
+.gh-spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  animation: gh-spin 0.9s linear infinite;
+}
+@keyframes gh-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- repo picker (combobox) ---------- */
+.combo { position: relative; }
+.combo-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.18), 0 2px 6px rgb(0 0 0 / 0.08);
+}
+.combo-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.combo-option.active { background: var(--hover); }
+.combo-name { overflow-wrap: anywhere; }
+.combo-option .tag { margin-left: 0; flex: none; }
+.tag.gh-public { color: var(--danger); border-color: var(--danger); }
+input[aria-invalid='true'] { border-color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  .status.busy .dot, .gh-spinner { animation: none; }
+}

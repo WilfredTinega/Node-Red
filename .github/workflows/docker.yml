@@ -1,0 +1,106 @@
+# Builds the dashboard image on every push to main and publishes it to
+# GitHub's container registry as ghcr.io/<owner>/<repo>:<full commit sha> and :latest.
+#
+# The dashboard's "Update available" check (server.js, dashboardStatus) depends on
+# this file. Keep these true when editing it:
+#   - the file name stays docker.yml (or set DASHBOARD_WORKFLOW on the dashboard);
+#   - it runs on `push` (the dashboard only looks at push runs of its branch);
+#   - the run succeeds only after the :<github.sha> tag is in the registry, because
+#     the dashboard pulls ghcr.io/<repo lowercase>:<head_sha> of the newest
+#     successful run;
+#   - REVISION is the full commit sha, which the image reports as APP_REVISION.
+name: docker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never cancel a build that is already running: a run cancelled mid-push could
+# leave :latest moved but no finished run for it, or the reverse. GitHub keeps at
+# most one queued run per group, so a burst of pushes still collapses: the build
+# in progress finishes, the queued runs in between are replaced, and the newest
+# commit is always built last (so :latest always ends on the newest commit).
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  # A commit that does not build or fails its backend tests must never be offered
+  # as a dashboard update, so the image is only published after these pass.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run --if-present test:backend
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Image name (registry names must be lowercase)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # OCI labels/annotations: source (links the package to this repo on GHCR),
+      # revision and created. Tags are set explicitly below.
+      - name: OCI metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      # arm64 is for the Raspberry Pi servers.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both tags are pushed together at the end of this step, once every
+      # platform has built, so the run only succeeds when :<sha> exists.
+      # :latest only moves for main (a manual run on another branch gets :<sha> only).
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: REVISION=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.image.outputs.name) || '' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=docker-main
+          cache-to: type=gha,scope=docker-main,mode=max

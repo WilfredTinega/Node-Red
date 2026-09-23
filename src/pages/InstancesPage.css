@@ -1,0 +1,30 @@
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.nowrap { white-space: nowrap; }
+.instance-name { font-weight: 500; }
+.instances-table td:first-child { white-space: nowrap; }
+
+.notice.result { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
+.notice.result.ok { color: var(--ok); }
+.notice.result button { flex: none; }
+
+.segmented { display: inline-flex; gap: 4px; margin: 4px 0 12px; }
+.segmented button.selected { background: var(--accent-soft); border-color: var(--accent); }
+
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
+.steps li { padding-left: 4px; }
+.steps .codeblock { margin-top: 6px; }
+
+/* .main is a grid; without this a wide table stretches the page past the viewport. */
+.page-card { min-width: 0; }
+.instances-table th { position: relative; }

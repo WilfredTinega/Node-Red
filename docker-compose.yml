@@ -1,6 +1,8 @@
 services:
   nodered-user-admin:
-    build: .
+    # Built by GitHub Actions (.github/workflows/docker.yml). Replace OWNER/REPO
+    # with the repository you push this code to, or use `build: .` instead.
+    image: ghcr.io/OWNER/REPO:latest
     container_name: nodered-user-admin
     restart: unless-stopped
     # Host networking lets the page see every port the server listens on, so it
@@ -9,13 +11,14 @@ services:
     network_mode: host
     volumes:
       - /opt/nodered-auth:/auth
-      # Holds password.key for viewable passwords. Only this container mounts it;
-      # back it up, because stored passwords cannot be viewed without it.
+      # password.key, backup and GitHub settings. Only this container mounts it;
+      # back it up, because stored passwords and the token need the key.
       - /opt/nodered-user-admin-secrets:/secrets
       # Optional instances.json: names for ports, and Node-RED on other machines.
       - /opt/nodered-user-admin-config:/config:ro
     environment:
       PORT: "1881"
+      TZ: Africa/Nairobi # backup times are in this timezone
       USERS_FILE: /auth/users.json
       DOCKER_API: http://127.0.0.1:2375
       PUBLIC_HOST: "94.237.25.175"
@@ -24,8 +27,7 @@ services:
     depends_on:
       - docker-proxy
 
-  # Read-only view of the container list, so the admin page never gets the
-  # full Docker socket. Bound to 127.0.0.1 only, never reachable from outside.
+  # Limits what the dashboard may ask Docker to do. Bound to 127.0.0.1 only.
   docker-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: nodered-user-admin-docker-proxy
@@ -33,7 +35,14 @@ services:
     ports:
       - "127.0.0.1:2375:2375"
     environment:
-      CONTAINERS: 1
+      CONTAINERS: 1 # list Node-RED containers
+      ALLOW_RESTARTS: 1 # the Restart button
+      ALLOW_START: 1
+      # The Update buttons (Node-RED instances and the dashboard itself) also
+      # need IMAGES=1 and POST=1. That lets the dashboard create containers,
+      # which is as powerful as root on this server: turn it on only once the
+      # dashboard is behind HTTPS and the default administrator password is changed.
+      IMAGES: 0
       POST: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

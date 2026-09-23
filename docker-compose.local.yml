@@ -4,6 +4,7 @@ services:
   nodered:
     image: nodered/node-red
     container_name: nodered-test
+    restart: unless-stopped
     ports:
       - "1890:1880"
     environment:
@@ -19,6 +20,7 @@ services:
   nodered-user-admin:
     build: .
     container_name: nodered-user-admin-test
+    restart: unless-stopped
     network_mode: host
     volumes:
       - ./local-test/auth:/auth
@@ -26,19 +28,26 @@ services:
       - ./local-test/config:/config:ro
     environment:
       PORT: "1891"
+      TZ: Africa/Nairobi
+      AUTH_HOST_DIR: /home/tinega/nodered-user-admin/local-test/auth
       USERS_FILE: /auth/users.json
       DOCKER_API: http://127.0.0.1:2375
       SECURE_COOKIE: "0"
     depends_on:
       - docker-proxy
 
+  # Local testing only: full write access so Update can be tried end to end.
   docker-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: nodered-user-admin-docker-proxy-test
+    restart: unless-stopped
     ports:
       - "127.0.0.1:2375:2375"
     environment:
       CONTAINERS: 1
-      POST: 0
+      IMAGES: 1
+      ALLOW_RESTARTS: 1
+      ALLOW_START: 1
+      POST: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

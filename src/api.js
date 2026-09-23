@@ -27,10 +27,28 @@ export const api = {
   login: (username, password) => request('POST', '/api/login', { username, password }),
   logout: () => request('POST', '/api/logout'),
   changeOwnPassword: (current, next) => request('POST', '/api/me/password', { current, next }),
+
   listInstances: () => request('GET', '/api/instances'),
+  restartInstance: (id) => request('POST', `/api/instances/${enc(id)}/restart`, {}),
+  updateInstance: (id) => request('POST', `/api/instances/${enc(id)}/update`, {}),
+
   listUsers: () => request('GET', '/api/users'),
   viewPassword: (username) => request('GET', `/api/users/${enc(username)}/password`),
   addUser: (user) => request('POST', '/api/users', user),
   updateUser: (username, changes) => request('PUT', `/api/users/${enc(username)}`, changes),
   deleteUser: (username) => request('DELETE', `/api/users/${enc(username)}`),
+
+  getBackup: () => request('GET', '/api/backup'),
+  saveBackup: (settings) => request('PUT', '/api/backup', settings),
+  testBackup: () => request('POST', '/api/backup/test', {}),
+  runBackup: () => request('POST', '/api/backup/run', {}),
+
+  getGithub: () => request('GET', '/api/github'),
+  connectGithub: (token) => request('POST', '/api/github/connect', { token }),
+  disconnectGithub: () => request('POST', '/api/github/disconnect', {}),
+  saveGithub: (settings) => request('PUT', '/api/github', settings),
+  githubRepos: () => request('GET', '/api/github/repos'),
+
+  getDashboard: () => request('GET', '/api/dashboard'),
+  updateDashboard: () => request('POST', '/api/dashboard/update', {}),
 };

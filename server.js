@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackups } from './backup.js';
-import { createDocker } from './docker.js';
+import { createDocker, registryAuth } from './docker.js';
+import { createGithubAccount, github } from './github.js';
 
 const USERS_FILE = process.env.USERS_FILE || '/auth/users.json';
 const PORT = Number(process.env.PORT || 1881);
@@ -40,8 +41,19 @@ const SCAN_HOST_PORTS = process.env.SCAN_HOST_PORTS !== '0';
 const INSTANCES_FILE = process.env.INSTANCES_FILE || '/config/instances.json';
 // Address shown on the page; blank means "the address you opened this page with".
 const PUBLIC_HOST = process.env.PUBLIC_HOST || '';
-// Backup settings and history; lives next to the key because it holds the encrypted token.
+// Where the shared users folder lives on the server, for the setup instructions.
+const AUTH_HOST_DIR = process.env.AUTH_HOST_DIR || '/opt/nodered-auth';
+// Backup settings and history, next to the key.
 const BACKUP_FILE = process.env.BACKUP_FILE || '/secrets/backup.json';
+// The connected GitHub account (encrypted token) and where dashboard updates come from.
+const GITHUB_FILE = process.env.GITHUB_FILE || '/secrets/github.json';
+// Remembers an update in flight, so the restarted dashboard can report how it went.
+const DASHBOARD_UPDATE_FILE = process.env.DASHBOARD_UPDATE_FILE || '/secrets/dashboard-update.json';
+// Baked in by the GitHub Actions build (the commit it was built from).
+const APP_REVISION = process.env.APP_REVISION || 'dev';
+// The GitHub Actions workflow that builds and publishes the dashboard image.
+const DASHBOARD_WORKFLOW = process.env.DASHBOARD_WORKFLOW || 'docker.yml';
+const REGISTRY = process.env.DASHBOARD_REGISTRY || 'ghcr.io';
 
 const sessions = new Map(); // token -> { username, expires }
 const failures = new Map(); // ip -> { count, until }
@@ -72,6 +84,10 @@ const checkPassword = (password, stored) =>
   typeof stored === 'string' && bcrypt.compareSync(password, stored.replace(/^\$2y\$/, '$2a$'));
 
 const generatePassword = () => crypto.randomBytes(12).toString('base64url');
+
+// Compared against when the username doesn't exist, so a wrong username takes
+// as long as a wrong password and doesn't reveal which accounts exist.
+const DUMMY_HASH = hash(generatePassword());
 
 // ---------- viewable passwords ----------
 // Node-RED only ever checks `password` (bcrypt). `secret` is an AES-256-GCM
@@ -255,7 +271,8 @@ app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
   const user =
     typeof username === 'string' && readUsers().find((u) => u.username === username.trim());
-  if (!user || typeof password !== 'string' || !checkPassword(password, user.password)) {
+  const ok = typeof password === 'string' && checkPassword(password, user ? user.password : DUMMY_HASH);
+  if (!user || !ok) {
     const lockExpired = f && f.until && f.until <= Date.now();
     const count = (lockExpired ? 0 : f?.count || 0) + 1;
     failures.set(ip, { count, until: count >= MAX_FAILURES ? Date.now() + LOCKOUT_MS : 0 });
@@ -364,7 +381,11 @@ app.put('/api/users/:username', requireAuth, requireAdmin, (req, res) => {
     const [plain, generated] = passwordFromBody(body);
     setPassword(user, plain);
     if (generated) shown = plain;
-    if (user.username !== req.user.username) endSessionsFor(user.username);
+    endSessionsFor(user.username);
+    // An admin resetting their own password keeps the session that made the change.
+    if (user.username === req.user.username) {
+      sessions.set(req.sessionToken, { username: user.username, expires: Date.now() + SESSION_MS });
+    }
   }
   writeUsers(users);
   res.json({ ok: true, password: shown });
@@ -393,8 +414,13 @@ async function dockerInstances() {
   const containers = await res.json();
   const instances = [];
   for (const c of containers) {
-    const labelled = c.Labels?.['nodered-admin.instance'] === 'true';
-    if (!labelled && !/node-?red/i.test(c.Image)) continue;
+    const label = c.Labels?.['nodered-admin.instance'];
+    if (label === 'false') continue;
+    // The dashboard and its update helper run an image called nodered-user-admin,
+    // which the name match below would take for Node-RED. Updating the dashboard
+    // from the instances list would stop it half-way through recreating itself.
+    if (label !== 'true' && c.Labels?.['nodered-admin.role']) continue;
+    if (label !== 'true' && !/node-?red/i.test(c.Image)) continue;
     // One row per published host port of Node-RED's 1880 (IPv4 and IPv6 bindings
     // collapse). A container that moved Node-RED off 1880 lists all its TCP ports.
     const published = (c.Ports || []).filter((p) => p.PublicPort && p.Type === 'tcp');
@@ -432,7 +458,12 @@ function configuredInstances() {
 
 // Every TCP port the host is listening on, from the kernel's socket tables.
 // Returns port -> { localOnly } where localOnly means bound to loopback only.
-const LOOPBACK = new Set(['0100007F', '00000000000000000000000001000000']);
+// Addresses are hex in host byte order: IPv4 127.x.x.x ends in 7F, and
+// IPv6 covers ::1 and IPv4-mapped ::ffff:127.x.x.x.
+const isLoopback = (addr) =>
+  addr.length === 8
+    ? addr.endsWith('7F')
+    : addr === '00000000000000000000000001000000' || /^0000000000000000FFFF0000[0-9A-F]{6}7F$/.test(addr);
 function hostListeningPorts() {
   const ports = new Map();
   for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
@@ -448,7 +479,7 @@ function hostListeningPorts() {
       const [addr, portHex] = cols[1].split(':');
       const port = parseInt(portHex, 16);
       const entry = ports.get(port) || { localOnly: true };
-      if (!LOOPBACK.has(addr)) entry.localOnly = false;
+      if (!isLoopback(addr)) entry.localOnly = false;
       ports.set(port, entry);
     }
   }
@@ -572,7 +603,7 @@ const instanceKey = (i) => (i.host ? `${i.host}:${i.port}` : i.port ? String(i.p
 app.get('/api/instances', requireAuth, async (req, res) => {
   const { instances, errors } = await listInstances();
   res.set('Cache-Control', 'no-store');
-  res.json({ publicHost: PUBLIC_HOST, canManageContainers: Boolean(docker), instances, errors });
+  res.json({ publicHost: PUBLIC_HOST, authHostDir: AUTH_HOST_DIR, canManageContainers: Boolean(docker), instances, errors });
 });
 
 // ---------- restart / update containers ----------
@@ -587,12 +618,13 @@ async function nodeRedContainer(id) {
   const inst = instances.find((i) => i.source === 'docker' && i.container === id);
   if (!inst) throw new HttpError(404, 'That container is not a Node-RED instance on this server.');
   if (busyContainers.has(id)) throw new HttpError(409, `${inst.name} is already being restarted or updated.`);
+  // Marked here, in the same tick as the check, so two clicks can't both pass it.
+  busyContainers.add(id);
   return inst;
 }
 
 async function containerAction(req, res, action) {
   const inst = await nodeRedContainer(req.params.id);
-  busyContainers.add(inst.container);
   scanCache.at = 0; // ports may move while the container restarts
   try {
     const result = await action(inst);
@@ -615,6 +647,119 @@ app.post('/api/instances/:id/update', requireAuth, requireAdmin, (req, res) =>
   containerAction(req, res, (inst) => docker.update(inst.container)),
 );
 
+// ---------- GitHub account ----------
+
+const githubAccount = createGithubAccount({ file: GITHUB_FILE, encrypt, decrypt, hasKey: () => Boolean(KEY) });
+
+const asBadRequest = (fn) => async (req, res) => {
+  try {
+    res.json(await fn(req));
+  } catch (e) {
+    throw e instanceof HttpError ? e : new HttpError(400, e.message);
+  }
+};
+
+app.get('/api/github', requireAuth, requireAdmin, (req, res) => res.json(githubAccount.publicState()));
+
+app.post(
+  '/api/github/connect',
+  requireAuth,
+  requireAdmin,
+  asBadRequest(async (req) => {
+    const state = await githubAccount.connect(req.body?.token);
+    backups.reschedule();
+    console.log(`[github] ${req.user.username} connected ${state.account.login}`);
+    return state;
+  }),
+);
+
+app.post(
+  '/api/github/disconnect',
+  requireAuth,
+  requireAdmin,
+  asBadRequest(async (req) => {
+    const state = githubAccount.disconnect();
+    backups.reschedule();
+    console.log(`[github] ${req.user.username} disconnected GitHub`);
+    return state;
+  }),
+);
+
+app.put('/api/github', requireAuth, requireAdmin, asBadRequest(async (req) => githubAccount.updateSettings(req.body || {})));
+
+app.get('/api/github/repos', requireAuth, requireAdmin, asBadRequest(async () => githubAccount.repos()));
+
+// ---------- dashboard updates ----------
+// GitHub Actions builds the image on every push and tags it with the commit.
+// An update is available once a build for a newer commit has finished.
+
+function readPendingUpdate() {
+  try {
+    return JSON.parse(fs.readFileSync(DASHBOARD_UPDATE_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function dashboardStatus() {
+  const { dashboardRepo: repo, dashboardBranch: branch, connected } = githubAccount.publicState();
+  const status = { revision: APP_REVISION, repo, branch, workflow: DASHBOARD_WORKFLOW, lastUpdate: readPendingUpdate() };
+  if (!connected || !repo) return { ...status, configured: false };
+
+  const runs = await github(
+    githubAccount.token(),
+    'GET',
+    `/repos/${repo}/actions/workflows/${encodeURIComponent(DASHBOARD_WORKFLOW)}/runs?branch=${encodeURIComponent(branch)}&event=push&per_page=10`,
+  );
+  const describe = (r) => r && { sha: r.head_sha, at: r.updated_at, url: r.html_url, message: r.head_commit?.message?.split('\n')[0] || '' };
+  const ready = runs.workflow_runs.find((r) => r.status === 'completed' && r.conclusion === 'success');
+  const latest = runs.workflow_runs[0];
+  const building = latest && latest.status !== 'completed' ? latest : null;
+  const failed = latest && latest.status === 'completed' && latest.conclusion !== 'success' ? latest : null;
+  return {
+    ...status,
+    configured: true,
+    canUpdate: Boolean(docker),
+    image: ready ? `${REGISTRY}/${repo.toLowerCase()}:${ready.head_sha}` : null,
+    latestBuild: describe(ready),
+    building: describe(building),
+    failedBuild: describe(failed),
+    updateAvailable: Boolean(ready && ready.head_sha !== APP_REVISION),
+  };
+}
+
+app.get('/api/dashboard', requireAuth, requireAdmin, asBadRequest(async () => dashboardStatus()));
+
+app.post(
+  '/api/dashboard/update',
+  requireAuth,
+  requireAdmin,
+  asBadRequest(async (req) => {
+    if (!docker) throw new Error('Docker access is not configured, so the dashboard cannot update itself.');
+    const status = await dashboardStatus();
+    if (!status.updateAvailable) throw new Error('There is no newer finished build to update to.');
+    const self = await docker.findByRole('dashboard');
+    if (!self) throw new Error('Cannot find this dashboard\'s container (label nodered-admin.role=dashboard).');
+
+    const { account } = githubAccount.publicState();
+    await docker.pull(status.image, registryAuth(account.login, githubAccount.token(), REGISTRY));
+    fs.writeFileSync(
+      DASHBOARD_UPDATE_FILE,
+      JSON.stringify({ from: APP_REVISION, to: status.latestBuild.sha, image: status.image, at: new Date().toISOString(), by: req.user.username }) + '\n',
+      { mode: 0o600 },
+    );
+    try {
+      await docker.runHelper(status.image, ['node', 'self-update.js', self.Id, status.image], [`DOCKER_API=${DOCKER_API}`]);
+    } catch (e) {
+      // Nothing was swapped, so don't leave a record the next start would report as rolled back.
+      fs.rmSync(DASHBOARD_UPDATE_FILE, { force: true });
+      throw e;
+    }
+    console.log(`[dashboard] ${req.user.username} started update ${APP_REVISION} -> ${status.latestBuild.sha}`);
+    return { ok: true, message: 'Updating. The dashboard restarts in a few seconds and this page reloads.', to: status.latestBuild.sha };
+  }),
+);
+
 // ---------- GitHub backups ----------
 
 const backups = createBackups({
@@ -622,12 +767,18 @@ const backups = createBackups({
   encrypt,
   decrypt,
   hasKey: () => Boolean(KEY),
+  getToken: () => githubAccount.token(),
+  isConnected: () => githubAccount.publicState().connected,
   listInstances,
   probeHost: PROBE_HOST,
   // The locked admin has full access everywhere, so it can read every instance.
   defaultCredentials: () => {
-    const u = readUsers().find((x) => x.username === LOCKED_ADMIN);
-    return KEY && u?.secret ? { username: u.username, password: decrypt(u.secret) } : null;
+    try {
+      const u = readUsers().find((x) => x.username === LOCKED_ADMIN);
+      return KEY && u?.secret ? { username: u.username, password: decrypt(u.secret) } : null;
+    } catch {
+      return null; // unreadable users file or a changed key: no default login
+    }
   },
 });
 
@@ -671,6 +822,8 @@ app.get('/{*splat}', (req, res) => res.sendFile(path.join(dist, 'index.html')));
 
 app.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  // Client errors from express itself (bad JSON, body too large, missing file).
+  if (err.expose && err.status >= 400 && err.status < 500) return res.status(err.status).json({ error: err.message });
   console.error(err);
   res.status(500).json({ error: `Server error: ${err.message}` });
 });
@@ -728,6 +881,28 @@ try {
   }
 } catch (e) {
   console.error(`WARNING: cannot install adminAuth.js next to ${USERS_FILE}: ${e.message}`);
+}
+
+// Finish the record of an update that restarted this dashboard: either this
+// is the new revision, or the helper rolled back and we're still the old one.
+// The helper checks the new container is still running 5 seconds after start
+// and rolls back if not, so the new revision waits longer than that before
+// calling it 'ok'; otherwise a crash in those seconds would leave 'ok' behind.
+const UPDATE_CONFIRM_MS = Number(process.env.DASHBOARD_UPDATE_CONFIRM_MS || 10000);
+function finishPendingUpdate() {
+  const pending = readPendingUpdate();
+  if (!pending || pending.result) return;
+  pending.result = APP_REVISION === pending.to ? 'ok' : 'rolled back';
+  pending.finishedAt = new Date().toISOString();
+  try {
+    fs.writeFileSync(DASHBOARD_UPDATE_FILE, JSON.stringify(pending) + '\n', { mode: 0o600 });
+  } catch {}
+  console.log(`[dashboard] update to ${pending.to}: ${pending.result}`);
+}
+const pendingUpdate = readPendingUpdate();
+if (pendingUpdate && !pendingUpdate.result) {
+  if (APP_REVISION === pendingUpdate.to) setTimeout(finishPendingUpdate, UPDATE_CONFIRM_MS).unref();
+  else finishPendingUpdate();
 }
 
 backups.start();
