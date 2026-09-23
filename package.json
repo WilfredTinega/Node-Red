@@ -1,0 +1,22 @@
+{
+  "name": "nodered-user-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Manage the shared Node-RED adminAuth users file from a web page",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "vite": "^8.3.0"
+  }
+}

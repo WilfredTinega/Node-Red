@@ -1,0 +1,44 @@
+# Local test stack: a Node-RED and the user admin page sharing ./local-test/auth.
+# Ports 1890/1891 because this machine already runs Node-RED on 1880 and the admin page on 1881.
+services:
+  nodered:
+    image: nodered/node-red
+    container_name: nodered-test
+    ports:
+      - "1890:1880"
+    environment:
+      # This instance's key in users.json: the host port.
+      NODERED_INSTANCE: "1890"
+    volumes:
+      - ./local-test/nodered-data:/data
+      - ./local-test/auth:/auth
+    # adminAuth.js is written by the admin page on start.
+    depends_on:
+      - nodered-user-admin
+
+  nodered-user-admin:
+    build: .
+    container_name: nodered-user-admin-test
+    network_mode: host
+    volumes:
+      - ./local-test/auth:/auth
+      - ./local-test/secrets:/secrets
+      - ./local-test/config:/config:ro
+    environment:
+      PORT: "1891"
+      USERS_FILE: /auth/users.json
+      DOCKER_API: http://127.0.0.1:2375
+      SECURE_COOKIE: "0"
+    depends_on:
+      - docker-proxy
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: nodered-user-admin-docker-proxy-test
+    ports:
+      - "127.0.0.1:2375:2375"
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

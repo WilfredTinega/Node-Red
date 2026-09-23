@@ -1,0 +1,25 @@
+# Dependencies and build output (npm ci / npm run build recreate them)
+node_modules/
+dist/
+
+# Logs and temp files
+npm-debug.log*
+*.log
+*.tmp
+
+# Local environment overrides
+.env
+.env.*
+
+# Local test stack: runtime data written by the containers.
+# Only the Node-RED settings and the empty secrets folder marker are tracked.
+local-test/auth/
+local-test/secrets/*
+!local-test/secrets/.keep
+local-test/nodered-data/*
+!local-test/nodered-data/settings.js
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store

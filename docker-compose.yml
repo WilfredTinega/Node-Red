@@ -1,0 +1,39 @@
+services:
+  nodered-user-admin:
+    build: .
+    container_name: nodered-user-admin
+    restart: unless-stopped
+    # Host networking lets the page see every port the server listens on, so it
+    # finds Node-RED installed as a normal package as well as in containers.
+    # The page listens directly on the server's port 1881.
+    network_mode: host
+    volumes:
+      - /opt/nodered-auth:/auth
+      # Holds password.key for viewable passwords. Only this container mounts it;
+      # back it up, because stored passwords cannot be viewed without it.
+      - /opt/nodered-user-admin-secrets:/secrets
+      # Optional instances.json: names for ports, and Node-RED on other machines.
+      - /opt/nodered-user-admin-config:/config:ro
+    environment:
+      PORT: "1881"
+      USERS_FILE: /auth/users.json
+      DOCKER_API: http://127.0.0.1:2375
+      PUBLIC_HOST: "94.237.25.175"
+      # Set to "1" once this is served over HTTPS.
+      SECURE_COOKIE: "0"
+    depends_on:
+      - docker-proxy
+
+  # Read-only view of the container list, so the admin page never gets the
+  # full Docker socket. Bound to 127.0.0.1 only, never reachable from outside.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: nodered-user-admin-docker-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2375:2375"
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
