@@ -152,7 +152,7 @@ async function baseCommit(token, repo, defaultBranch) {
 // systemLogin: { username, ensure(storedSecret) -> { password, secret } } is the
 // dashboard-managed read-only account used when no login is set here. Its
 // encrypted password lives in this file only (systemLoginSecret), never on the user.
-export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, publicHost, systemLogin }) {
+export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, publicHost, systemLogin, onComplete }) {
   let running = false;
   let nextRunAt = null;
 
@@ -326,6 +326,11 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
       s.history = [entry, ...(s.history || [])].slice(0, HISTORY_SIZE);
       save(s);
       console.log(`[backup] ${entry.ok ? 'ok' : 'FAILED'} ${entry.branch || ''} ${entry.message}`);
+      try {
+        onComplete?.(entry);
+      } catch (e) {
+        console.error('[backup] onComplete', e);
+      }
     }
     return entry;
   }

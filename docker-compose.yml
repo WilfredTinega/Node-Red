@@ -55,10 +55,13 @@ services:
       ALLOW_RESTARTS: 1 # the Restart button
       ALLOW_START: 1
       # The Update buttons (Node-RED instances and the dashboard itself) also
-      # need IMAGES=1 and POST=1. That lets the dashboard create containers,
-      # which is as powerful as root on this server: turn it on only once the
-      # dashboard is behind HTTPS and the initial administrator password is changed.
+      # need IMAGES=1 and POST=1. Docker Connect additionally needs EXEC=1 (it
+      # edits the container's settings.js via /exec). This lets the dashboard
+      # create containers and run commands in them, which is as powerful as root
+      # on this server: turn it on only once the dashboard is behind HTTPS and
+      # the initial administrator password is changed.
       IMAGES: 0
+      EXEC: 0
       POST: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

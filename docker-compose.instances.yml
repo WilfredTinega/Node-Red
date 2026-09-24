@@ -1,0 +1,42 @@
+# Throwaway Node-RED instances for testing the dashboard's manage features
+# (Connect / Restart / Update / backup) without touching your real ones.
+#
+# Start:                sudo docker compose -f docker-compose.instances.yml up -d
+# Stop (keep flows):    sudo docker compose -f docker-compose.instances.yml stop
+# Remove + delete data: sudo docker compose -f docker-compose.instances.yml down -v
+#
+# These start open (no login) and NOT connected to the shared accounts, so you
+# can test Connect on them. Each has its own /data volume, so their flows survive
+# Restart/Update. The dashboard finds them through the Docker proxy.
+services:
+  nr-test-1892:
+    image: nodered/node-red
+    container_name: nr-test-1892
+    restart: unless-stopped
+    ports:
+      - "1892:1880"
+    volumes:
+      - nr1892:/data
+
+  nr-test-1893:
+    image: nodered/node-red
+    container_name: nr-test-1893
+    restart: unless-stopped
+    ports:
+      - "1893:1880"
+    volumes:
+      - nr1893:/data
+
+  nr-test-1894:
+    image: nodered/node-red
+    container_name: nr-test-1894
+    restart: unless-stopped
+    ports:
+      - "1894:1880"
+    volumes:
+      - nr1894:/data
+
+volumes:
+  nr1892:
+  nr1893:
+  nr1894:

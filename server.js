@@ -7,9 +7,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { createBackups } from './backup.js';
 import { createDocker, registryAuth } from './docker.js';
 import { callHostAgent, hostAgentEnabled } from './host-agent-client.js';
+import { createActivityLog } from './activity-log.js';
 import { createGithubAccount, github } from './github.js';
 
 const USERS_FILE = process.env.USERS_FILE || '/auth/users.json';
@@ -68,6 +70,8 @@ const BACKUP_FILE = process.env.BACKUP_FILE || '/secrets/backup.json';
 const GITHUB_FILE = process.env.GITHUB_FILE || '/secrets/github.json';
 // Remembers an update in flight, so the restarted dashboard can report how it went.
 const DASHBOARD_UPDATE_FILE = process.env.DASHBOARD_UPDATE_FILE || '/secrets/dashboard-update.json';
+// Durable audit log: who ran which action on which instance, and the result.
+const ACTIVITY_FILE = process.env.ACTIVITY_FILE || '/secrets/activity.json';
 // Baked in by the GitHub Actions build (the commit it was built from).
 const APP_REVISION = process.env.APP_REVISION || 'dev';
 // The GitHub Actions workflow that builds and publishes the dashboard image.
@@ -775,6 +779,12 @@ app.get('/api/instances', requireAuth, async (req, res) => {
 
 const docker = DOCKER_API ? createDocker(DOCKER_API) : null;
 const busyContainers = new Set();
+const activity = createActivityLog(ACTIVITY_FILE);
+
+app.get('/api/activity', requireAuth, requireAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ entries: activity.read() });
+});
 
 // Only act on containers discovery reports as Node-RED, never on an arbitrary id.
 async function nodeRedContainer(id) {
@@ -788,15 +798,17 @@ async function nodeRedContainer(id) {
   return inst;
 }
 
-async function containerAction(req, res, action) {
+async function containerAction(req, res, name, action) {
   const inst = await nodeRedContainer(req.params.id);
   scanCache.at = 0; // ports may move while the container restarts
   try {
     const result = await action(inst);
     console.log(`[docker] ${req.user.username}: ${result.message}`);
+    activity.add({ user: req.user.username, action: name, target: inst.name, ok: true, message: result.message, steps: result.steps });
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error(`[docker] ${req.user.username} on ${inst.name}: ${e.message}`);
+    activity.add({ user: req.user.username, action: name, target: inst.name, ok: false, message: e.message });
     throw new HttpError(500, e.message);
   } finally {
     busyContainers.delete(inst.container);
@@ -805,27 +817,28 @@ async function containerAction(req, res, action) {
 }
 
 app.post('/api/instances/:id/restart', requireAuth, requireAdmin, (req, res) =>
-  containerAction(req, res, (inst) => docker.restart(inst.container)),
+  containerAction(req, res, 'restart', (inst) => docker.restart(inst.container)),
 );
 
 app.post('/api/instances/:id/update', requireAuth, requireAdmin, (req, res) =>
-  containerAction(req, res, (inst) => docker.update(inst.container)),
+  containerAction(req, res, 'update', (inst) => docker.update(inst.container)),
 );
 
 // Connect a Docker container to the shared accounts (edit its settings.js + recreate).
 app.post('/api/instances/:id/connect', requireAuth, requireAdmin, (req, res) =>
-  containerAction(req, res, (inst) => docker.connect(inst.container, { authDir: AUTH_HOST_DIR, hostPort: inst.port })),
+  containerAction(req, res, 'connect', (inst) => docker.connect(inst.container, { authDir: AUTH_HOST_DIR, hostPort: inst.port })),
 );
 
 // ---------- host-installed instances (via the root host agent) ----------
 
 const busyHosts = new Set();
 
-// Only act on a port discovery reports as a host-installed (source 'host') Node-RED.
+// Only act on a host-installed Node-RED: a local instance (from the port scan
+// or named in instances.json) that isn't a Docker container or on another machine.
 async function hostInstance(port) {
   if (!hostAgentEnabled()) throw new HttpError(400, 'The host agent is not installed, so host instances cannot be managed from here.');
   const { instances } = await listInstances();
-  const inst = instances.find((i) => i.source === 'host' && !i.host && String(i.port) === String(port));
+  const inst = instances.find((i) => !i.container && !i.host && String(i.port) === String(port));
   if (!inst) throw new HttpError(404, 'That port is not a host-installed Node-RED instance on this server.');
   if (busyHosts.has(String(port))) throw new HttpError(409, `${inst.name} is already being worked on.`);
   busyHosts.add(String(port));
@@ -838,8 +851,13 @@ async function hostAction(req, res, action, params) {
   try {
     const result = await callHostAgent(action, { port: inst.port, ...params });
     console.log(`[host] ${req.user.username}: ${action} ${inst.name} (:${inst.port}): ${result.ok ? 'ok' : 'FAILED'} ${result.message || ''}`);
+    activity.add({ user: req.user.username, action, target: inst.name, ok: Boolean(result.ok), message: result.message, steps: result.steps });
     if (!result.ok) throw new HttpError(500, result.message || `${action} failed.`, { steps: result.steps || [] });
     res.json({ ok: true, ...result });
+  } catch (e) {
+    // A transport failure (agent unreachable) never reached activity.add above.
+    if (!(e instanceof HttpError)) activity.add({ user: req.user.username, action, target: inst.name, ok: false, message: e.message });
+    throw e;
   } finally {
     busyHosts.delete(String(inst.port));
     scanCache.at = 0;
@@ -1003,6 +1021,19 @@ const backups = createBackups({
   probeHost: PROBE_HOST,
   publicHost: PUBLIC_HOST,
   systemLogin: { username: BACKUP_USER, ensure: ensureBackupAccount },
+  // Record each backup in the audit log. The trigger names who ran it
+  // ("manual (<user>)") or "schedule".
+  onComplete: (entry) => {
+    const user = entry.trigger?.match(/^manual \((.+)\)$/)?.[1] || 'schedule';
+    activity.add({
+      user,
+      action: 'backup',
+      target: entry.branch || 'backup',
+      ok: entry.ok,
+      message: entry.message,
+      steps: (entry.instances || []).map((i) => ({ ok: i.ok, name: i.name, detail: i.ok ? `${i.nodes} nodes` : i.error })),
+    });
+  },
 });
 
 app.get('/api/backup', requireAuth, requireAdmin, (req, res) => {
@@ -1116,8 +1147,44 @@ try {
     fs.renameSync(`${dest}.tmp`, dest);
     console.log(`Updated ${dest}`);
   }
+  // adminAuth.js is CommonJS (require). Mark the folder so Node treats it that
+  // way even when an ancestor package.json says "type":"module" (e.g. a host
+  // Node-RED whose userDir sits under an ESM project). Without this it fails
+  // with "require is not defined in ES module scope".
+  const pkg = path.join(path.dirname(USERS_FILE), 'package.json');
+  if (!fs.existsSync(pkg)) {
+    fs.writeFileSync(pkg, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', { mode: 0o644 });
+    console.log(`Wrote ${pkg} (marks the shared login as CommonJS)`);
+  }
 } catch (e) {
   console.error(`WARNING: cannot install adminAuth.js next to ${USERS_FILE}: ${e.message}`);
+}
+// adminAuth.js needs bcryptjs. A Docker Node-RED bundles it, but a host install
+// may not, so ship a copy next to adminAuth.js; adminAuth.js looks there for it.
+// Only into an existing shared folder — never create the folder ourselves.
+try {
+  if (!fs.existsSync(path.dirname(USERS_FILE))) throw new Error('shared folder does not exist');
+  const require = createRequire(import.meta.url);
+  // bcryptjs 3's "exports" hides package.json, so derive the package dir from
+  // its main entry instead of resolving package.json directly.
+  const main = require.resolve('bcryptjs');
+  const bcryptjsDir = main.slice(0, main.lastIndexOf('bcryptjs') + 'bcryptjs'.length);
+  const destDir = path.join(path.dirname(USERS_FILE), 'node_modules', 'bcryptjs');
+  const version = (p) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(p, 'package.json'), 'utf8')).version;
+    } catch {
+      return null;
+    }
+  };
+  if (version(destDir) !== version(bcryptjsDir)) {
+    fs.rmSync(destDir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(destDir), { recursive: true });
+    fs.cpSync(bcryptjsDir, destDir, { recursive: true });
+    console.log(`Installed bcryptjs next to adminAuth.js (${destDir})`);
+  }
+} catch (e) {
+  console.error(`WARNING: could not bundle bcryptjs next to adminAuth.js: ${e.message}`);
 }
 // Node-RED runs as another user, so a users.json only its owner can read (a
 // 0600 file from an older dashboard, or one created by hand) refuses every login.

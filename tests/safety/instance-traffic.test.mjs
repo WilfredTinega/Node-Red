@@ -88,8 +88,9 @@ test('backend source: no writes to Node-RED files, no non-GET flow requests', ()
     }
     // fetch(`…/flows`…) calls: none may carry a method.
     for (const m of code.matchAll(/fetch\(`[^`]*\/flows?[`/?][^;]*/g)) assert.doesNotMatch(m[0], /method\s*:/, `${f}: ${m[0].slice(0, 80)}`);
-    const writes = [...code.matchAll(/fs\.(writeFileSync|renameSync|rmSync|unlinkSync|appendFileSync|mkdirSync|copyFileSync|chmodSync)\(([^,)]+)/g)].map((m) => m[2].trim());
-    const known = ['tmp', 'USERS_FILE', 'SECRET_KEY_FILE', 'DASHBOARD_UPDATE_FILE', 'INITIAL_PASSWORD_FILE', '`${dest}.tmp`', 'dest', '`${file}.tmp`', 'file'];
+    const writes = [...code.matchAll(/fs\.(writeFileSync|renameSync|rmSync|unlinkSync|appendFileSync|mkdirSync|copyFileSync|cpSync|chmodSync)\(([^,)]+)/g)].map((m) => m[2].trim());
+    // destDir/its parent are `<auth>/node_modules/bcryptjs` (the bundled login dep).
+    const known = ['tmp', 'USERS_FILE', 'SECRET_KEY_FILE', 'DASHBOARD_UPDATE_FILE', 'INITIAL_PASSWORD_FILE', '`${dest}.tmp`', 'dest', '`${file}.tmp`', 'file', 'destDir', 'path.dirname(destDir', 'bcryptjsDir', 'pkg'];
     for (const t of writes) assert.ok(known.includes(t), `${f} writes to ${t}`);
   }
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'backup.js'), 'utf8'), /['"]POST['"][^\n]*\/flows/);

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import { Icon, PasswordInput } from './ui.jsx';
+import { ActivityProvider } from './activity.jsx';
 import InstancesPage from './pages/InstancesPage.jsx';
 import UsersPage from './pages/UsersPage.jsx';
 import BackupsPage from './pages/BackupsPage.jsx';
 import GithubPage from './pages/GithubPage.jsx';
 import AccountPage from './pages/AccountPage.jsx';
+import ActivityPage from './pages/ActivityPage.jsx';
 
 // Sidebar entries. adminOnly pages are hidden from read-only users.
 const PAGES = [
@@ -13,6 +15,7 @@ const PAGES = [
   { id: 'users', label: 'Users', icon: 'users', component: UsersPage, adminOnly: true },
   { id: 'backups', label: 'Backups', icon: 'backup', component: BackupsPage, adminOnly: true },
   { id: 'github', label: 'GitHub', icon: 'github', component: GithubPage, adminOnly: true },
+  { id: 'activity', label: 'Activity', icon: 'activity', component: ActivityPage, adminOnly: true },
   { id: 'account', label: 'My account', icon: 'account', component: AccountPage },
 ];
 
@@ -32,7 +35,11 @@ export default function App() {
 
   if (me === undefined) return <main className="center muted">Loading…</main>;
   if (me === null) return <Login onLogin={setMe} />;
-  return <Shell me={me} setMe={setMe} onAuthError={onAuthError} />;
+  return (
+    <ActivityProvider>
+      <Shell me={me} setMe={setMe} onAuthError={onAuthError} />
+    </ActivityProvider>
+  );
 }
 
 function Shell({ me, setMe, onAuthError }) {

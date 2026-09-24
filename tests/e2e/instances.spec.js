@@ -170,16 +170,21 @@ test.describe('instances', () => {
     dialog = page.getByRole('dialog', { name: 'Restart nodered-main' });
     await dialog.getByRole('button', { name: 'Restart' }).click();
     await expect(dialog).toBeHidden();
-    await expect(main.getByRole('button', { name: 'Restarting…' })).toBeDisabled();
-    await expect(main.getByRole('button', { name: 'Update' })).toBeDisabled();
-    const notice = page.locator('.notice.result');
-    await expect(notice).toHaveText(/nodered-main: Restarted\./);
-    await expect(notice).toHaveClass(/ok/);
+    // While it runs, the row shows a progress bar instead of the buttons.
+    await expect(main.getByRole('progressbar')).toBeVisible();
+    await expect(main.getByRole('button', { name: 'Restart' })).toHaveCount(0);
+    const toast = page.locator('.toast');
+    await expect(toast).toContainText('nodered-main');
+    await expect(toast).toContainText('Restarted.');
+    await expect(toast).toHaveClass(/ok/);
     expect(stack.docker.find('POST', /\/restart$/).map((r) => r.path)).toEqual([restartPath]);
     await expect(main.getByRole('button', { name: 'Restart' })).toBeEnabled();
 
-    await notice.getByRole('button', { name: 'Dismiss' }).click();
-    await expect(notice).toHaveCount(0);
+    await toast.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(toast).toHaveCount(0);
+    // It is also kept in the activity log.
+    await page.goto('/#/activity');
+    await expect(page.locator('.activity-item').first()).toContainText('Restarted.');
   });
 
   test('Update asks first, pulls the image and reports the result', async ({ page, stack }) => {
@@ -189,7 +194,7 @@ test.describe('instances', () => {
     const dialog = page.getByRole('dialog', { name: 'Update nodered-main' });
     await expect(dialog.locator('code')).toHaveText('nodered/node-red:4.0.9');
     await dialog.getByRole('button', { name: 'Update' }).click();
-    await expect(page.locator('.notice.result.ok')).toHaveText(/Already on the newest nodered\/node-red:4\.0\.9\. Restarted it\./);
+    await expect(page.locator('.toast.ok')).toContainText('Already on the newest nodered/node-red:4.0.9. Restarted it.');
 
     const pulls = stack.docker.find('POST', /^\/images\/create$/);
     expect(pulls).toHaveLength(1);
@@ -205,7 +210,7 @@ test.describe('instances', () => {
     await stack.docker.close();
     await row(page, 'nodered-main').getByRole('button', { name: 'Restart' }).click();
     await page.getByRole('dialog', { name: 'Restart nodered-main' }).getByRole('button', { name: 'Restart' }).click();
-    await expect(page.locator('.notice.result.error')).toHaveText(/nodered-main: That container is not a Node-RED instance on this server\./);
+    await expect(page.locator('.toast.error')).toContainText('That container is not a Node-RED instance on this server.');
   });
 
   test('a read-only user sees the list but no actions', async ({ page, stack }) => {

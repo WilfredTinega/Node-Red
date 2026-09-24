@@ -87,8 +87,13 @@ test('fresh install: writes users.json and adminAuth.js into the shared folder a
   const srv = await start(root);
   await srv.stop();
   const changed = assertOnlyOwnFolders(root, before);
-  assert.deepEqual([...changed].sort(), ['auth/adminAuth.js', 'auth/users.json', 'secrets/password.key']);
+  // Besides users.json and adminAuth.js the dashboard marks the folder CommonJS
+  // (package.json) and bundles bcryptjs there so a host Node-RED can load the login.
+  const notDep = [...changed].filter((f) => !f.startsWith('auth/node_modules/'));
+  assert.deepEqual(notDep.sort(), ['auth/adminAuth.js', 'auth/package.json', 'auth/users.json', 'secrets/password.key']);
   assert.equal(fs.readFileSync(path.join(root, 'auth', 'adminAuth.js'), 'utf8'), OUR_ADMIN_AUTH);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'auth', 'package.json'), 'utf8')), { type: 'commonjs' });
+  assert.ok(fs.existsSync(path.join(root, 'auth', 'node_modules', 'bcryptjs', 'package.json')), 'bcryptjs bundled');
 });
 
 test('the shared folder does not exist yet: nothing is created anywhere, the page still starts', async () => {
@@ -114,7 +119,9 @@ test('an existing shared folder: other files, existing users and file permission
   const srv = await start(root);
   await srv.stop();
   const changed = assertOnlyOwnFolders(root, before);
-  assert.deepEqual([...changed].filter((f) => f.startsWith('auth/')), ['auth/users.json'], 'only users.json changed in the shared folder');
+  // users.json is updated; package.json (CommonJS marker) and bundled bcryptjs are added.
+  const authChanged = [...changed].filter((f) => f.startsWith('auth/') && !f.startsWith('auth/node_modules/'));
+  assert.deepEqual(authChanged.sort(), ['auth/package.json', 'auth/users.json'], 'only users.json + the CommonJS marker changed in the shared folder');
   assert.equal(fs.readFileSync(path.join(root, 'auth', 'adminAuth.js'), 'utf8'), foreign, 'foreign adminAuth.js left alone');
   assert.match(srv.log(), /was not written by this dashboard, so it was left as it is/);
   const users = JSON.parse(fs.readFileSync(path.join(root, 'auth', 'users.json'), 'utf8'));

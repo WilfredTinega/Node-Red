@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { api } from '../api.js';
 import Select from '../Select.jsx';
-import { Card, ErrorText, Notice, PageHeader, Status, formatWhen, timeAgo, useAction, useLoad, zoneAbbrev } from '../ui.jsx';
+import { Card, ErrorText, Notice, PageHeader, SkeletonLines, Status, formatWhen, timeAgo, useAction, useLoad, zoneAbbrev } from '../ui.jsx';
 import { RepoPicker, useRepos } from './GithubPage.jsx';
 import './BackupsPage.css';
 
@@ -74,7 +74,7 @@ export default function BackupsPage({ onAuthError }) {
   return (
     <>
       <PageHeader title="Backups" />
-      {!state && (backup.error ? <Notice kind="error">{backup.error}</Notice> : <p className="muted">Loading…</p>)}
+      {!state && (backup.error ? <Notice kind="error">{backup.error}</Notice> : <Card className="page-card"><SkeletonLines lines={5} /></Card>)}
       {state && (
         <>
           {!state.githubConnected && (

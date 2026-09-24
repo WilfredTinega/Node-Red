@@ -139,6 +139,7 @@ export async function startServer({ dir = tempDir('srv'), env = {}, users } = {}
     BACKUP_FILE: path.join(dir, 'backup.json'),
     GITHUB_FILE: path.join(dir, 'github.json'),
     DASHBOARD_UPDATE_FILE: path.join(dir, 'dashboard-update.json'),
+    ACTIVITY_FILE: path.join(dir, 'activity.json'),
     SETTINGS_FILE: path.join(dir, 'settings.json'),
     INITIAL_PASSWORD_FILE: path.join(dir, 'initial-admin-password'),
     INSTANCES_FILE: path.join(dir, 'instances.json'),

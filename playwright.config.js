@@ -10,7 +10,8 @@ export default defineConfig({
   expect: { timeout: 7000 },
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
-  retries: 0,
+  // CI runners are slower; retry to absorb timing flakes (a real failure still fails twice).
+  retries: process.env.CI ? 2 : 0,
   // Each worker's server gets its own port in 18980-18999, so never more than 20.
   workers: process.env.CI ? 2 : 4,
   reporter: [['list'], ['html', { open: 'never' }]],

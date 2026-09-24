@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { Card, CodeBlock, ConfirmDialog, Dialog, ErrorText, Notice, PageHeader, Status, useLoad } from '../ui.jsx';
+import { Card, CodeBlock, ConfirmDialog, Dialog, ErrorText, Notice, PageHeader, ProgressBar, Skeleton, Status, useLoad } from '../ui.jsx';
+import { useActivity } from '../activity.jsx';
 import './InstancesPage.css';
 
 const STATUS_LABELS = { online: 'Online', offline: 'Stopped', unreachable: 'Not responding' };
@@ -15,7 +16,9 @@ export default function InstancesPage({ me, onAuthError }) {
   const [confirm, setConfirm] = useState(null); // { action: 'restart' | 'update' | 'connect', instance }
   const [dialog, setDialog] = useState(null); // { type: 'package-update' | 'connect', instance }  (fallback when the host agent is absent)
   const [busy, setBusy] = useState({}); // row key -> 'restart' | 'update' | 'connect'
-  const [results, setResults] = useState([]); // [{ id, ok, text, steps }]
+  const [progress, setProgress] = useState({}); // row key -> percent
+  const timers = useRef({});
+  const { push } = useActivity();
 
   const host = data?.publicHost || window.location.hostname;
   const instances = data?.instances || [];
@@ -23,23 +26,51 @@ export default function InstancesPage({ me, onAuthError }) {
   const canManageContainers = me.admin && data?.canManageContainers;
   const canManageHost = me.admin && data?.canManageHost;
 
+  // The server doesn't stream progress, so ease a bar toward ~95% over the
+  // action's typical duration, then jump to 100% when it actually finishes.
+  const startProgress = useCallback((key, action) => {
+    const estimate = { restart: 12000, connect: 35000, update: 70000 }[action] || 20000;
+    const started = Date.now();
+    setProgress((p) => ({ ...p, [key]: 0 }));
+    clearInterval(timers.current[key]);
+    timers.current[key] = setInterval(() => {
+      const elapsed = Date.now() - started;
+      const pct = 95 * (1 - Math.exp(-elapsed / (estimate * 0.5)));
+      setProgress((p) => ({ ...p, [key]: pct }));
+    }, 300);
+  }, []);
+
+  const finishProgress = useCallback((key, ok) => {
+    clearInterval(timers.current[key]);
+    delete timers.current[key];
+    if (ok) {
+      setProgress((p) => ({ ...p, [key]: 100 }));
+      setTimeout(() => setProgress((p) => ({ ...p, [key]: undefined })), 500);
+    } else {
+      setProgress((p) => ({ ...p, [key]: undefined }));
+    }
+  }, []);
+
   const runAction = useCallback(
     async (action, instance) => {
       const docker = Boolean(instance.container);
       const key = rowBusyKey(instance);
       setConfirm(null);
       setBusy((b) => ({ ...b, [key]: action }));
-      const resultId = `${Date.now()}-${key}`;
+      startProgress(key, action);
       const call = docker
         ? { restart: api.restartInstance, update: api.updateInstance, connect: api.connectInstance }[action].bind(null, instance.container)
         : { restart: api.restartHost, update: api.updateHost, connect: api.connectHost }[action].bind(null, instance.port);
+      let ok = false;
       try {
         const res = await call();
-        setResults((r) => [{ id: resultId, ok: true, text: `${instance.name}: ${res.message || 'Done.'}`, steps: res.steps }, ...r]);
+        ok = true;
+        push({ kind: 'ok', title: instance.name, message: res.message || 'Done.', steps: res.steps });
       } catch (err) {
         onAuthError(err);
-        setResults((r) => [{ id: resultId, ok: false, text: `${instance.name}: ${err.message}`, steps: err.data?.steps }, ...r]);
+        push({ kind: 'error', title: instance.name, message: err.message, steps: err.data?.steps });
       } finally {
+        finishProgress(key, ok);
         setBusy((b) => {
           const next = { ...b };
           delete next[key];
@@ -48,7 +79,7 @@ export default function InstancesPage({ me, onAuthError }) {
         reload();
       }
     },
-    [onAuthError, reload],
+    [onAuthError, reload, push, startProgress, finishProgress],
   );
 
   const closeDialog = useCallback(() => setDialog(null), []);
@@ -66,27 +97,6 @@ export default function InstancesPage({ me, onAuthError }) {
         }
       />
 
-      {results.map((r) => (
-        <div key={r.id} className={`notice result ${r.ok ? 'ok' : 'error'}`} role="status">
-          <div className="result-body">
-            <span>{r.text}</span>
-            {r.steps?.length > 0 && (
-              <ul className="steps-result">
-                {r.steps.map((s, n) => (
-                  <li key={n} className={s.ok ? 'ok' : 'error'}>
-                    {s.ok ? '✓' : '✗'} {s.name}
-                    {s.detail ? ` — ${s.detail}` : ''}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <button className="ghost small" onClick={() => setResults((all) => all.filter((x) => x.id !== r.id))}>
-            Dismiss
-          </button>
-        </div>
-      ))}
-
       <Card className="page-card">
         <ErrorText>{error}</ErrorText>
         {data?.errors?.map((e) => (
@@ -94,7 +104,33 @@ export default function InstancesPage({ me, onAuthError }) {
             {e}
           </Notice>
         ))}
-        {!data && !error && <p className="muted">Looking for instances…</p>}
+        {!data && !error && (
+          <div className="table-wrap">
+            <table className="instances-table">
+              <tbody>
+                {Array.from({ length: 3 }, (_, i) => (
+                  <tr key={i}>
+                    <td>
+                      <Skeleton w="60%" />
+                    </td>
+                    <td>
+                      <Skeleton w="70%" />
+                    </td>
+                    <td>
+                      <Skeleton w="50%" />
+                    </td>
+                    <td>
+                      <Skeleton w="40%" />
+                    </td>
+                    <td>
+                      <Skeleton w="50%" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         {data && instances.length === 0 && <p className="muted">No Node-RED instances found.</p>}
         {instances.length > 0 && (
           <div className="table-wrap">
@@ -123,6 +159,7 @@ export default function InstancesPage({ me, onAuthError }) {
                     canManageContainers={canManageContainers}
                     canManageHost={canManageHost}
                     busy={busy[rowBusyKey(i)]}
+                    progress={progress[rowBusyKey(i)]}
                     onConfirm={(action) => setConfirm({ action, instance: i })}
                     onDialog={(type) => setDialog({ type, instance: i })}
                   />
@@ -162,7 +199,9 @@ export default function InstancesPage({ me, onAuthError }) {
   );
 }
 
-function InstanceRow({ instance: i, host, admin, canManageContainers, canManageHost, busy, onConfirm, onDialog }) {
+const BUSY_LABELS = { restart: 'Restarting…', update: 'Updating…', connect: 'Connecting…' };
+
+function InstanceRow({ instance: i, host, admin, canManageContainers, canManageHost, busy, progress, onConfirm, onDialog }) {
   const kind = kindOf(i);
   const address = i.port ? `${i.host || (i.localOnly ? '127.0.0.1' : host)}:${i.port}` : null;
   const needsConnect = kind !== 'remote' && (i.login !== 'required' || i.sharedLogins === false);
@@ -211,43 +250,49 @@ function InstanceRow({ instance: i, host, admin, canManageContainers, canManageH
       <td className={`nowrap${i.login === 'open' ? ' error' : ''}`}>{LOGIN_LABELS[i.login] || (i.login && i.login !== 'unknown' ? i.login : '—')}</td>
       {admin && (
         <td>
-          <div className="actions">
-            {/* Live buttons when we can manage this kind: Docker via the proxy,
-                host installs via the host agent. Otherwise the instruction dialog. */}
-            {((kind === 'docker' && canManageContainers && i.container) || (kind === 'package' && canManageHost)) && (
-              <>
-                <button className="ghost small" onClick={() => onConfirm('restart')} disabled={Boolean(busy)}>
-                  {busy === 'restart' ? 'Restarting…' : 'Restart'}
-                </button>
-                <button className="ghost small" onClick={() => onConfirm('update')} disabled={Boolean(busy)}>
-                  {busy === 'update' ? 'Updating…' : 'Update'}
-                </button>
-                {needsConnect && (
-                  <button className="ghost small" onClick={() => onConfirm('connect')} disabled={Boolean(busy)}>
-                    {busy === 'connect' ? 'Connecting…' : 'Connect'}
+          {/* While an action runs the buttons are replaced by a progress bar, so
+              the row doesn't jump as button labels change. */}
+          {busy ? (
+            <ProgressBar percent={progress ?? 0} label={BUSY_LABELS[busy] || 'Working…'} />
+          ) : (
+            <div className="actions">
+              {/* Live buttons when we can manage this kind: Docker via the proxy,
+                  host installs via the host agent. Otherwise the instruction dialog. */}
+              {((kind === 'docker' && canManageContainers && i.container) || (kind === 'package' && canManageHost)) && (
+                <>
+                  <button className="ghost small" onClick={() => onConfirm('restart')}>
+                    Restart
                   </button>
-                )}
-              </>
-            )}
-            {/* Fallback: no live management for this kind — show the manual steps. */}
-            {kind === 'package' && !canManageHost && (
-              <>
-                <button className="ghost small" onClick={() => onDialog('package-update')}>
-                  Update…
-                </button>
-                {needsConnect && (
-                  <button className="ghost small" onClick={() => onDialog('connect')}>
-                    Connect
+                  <button className="ghost small" onClick={() => onConfirm('update')}>
+                    Update
                   </button>
-                )}
-              </>
-            )}
-            {kind === 'docker' && !canManageContainers && needsConnect && (
-              <button className="ghost small" onClick={() => onDialog('connect')}>
-                Connect
-              </button>
-            )}
-          </div>
+                  {needsConnect && (
+                    <button className="ghost small" onClick={() => onConfirm('connect')}>
+                      Connect
+                    </button>
+                  )}
+                </>
+              )}
+              {/* Fallback: no live management for this kind — show the manual steps. */}
+              {kind === 'package' && !canManageHost && (
+                <>
+                  <button className="ghost small" onClick={() => onDialog('package-update')}>
+                    Update…
+                  </button>
+                  {needsConnect && (
+                    <button className="ghost small" onClick={() => onDialog('connect')}>
+                      Connect
+                    </button>
+                  )}
+                </>
+              )}
+              {kind === 'docker' && !canManageContainers && needsConnect && (
+                <button className="ghost small" onClick={() => onDialog('connect')}>
+                  Connect
+                </button>
+              )}
+            </div>
+          )}
         </td>
       )}
     </tr>

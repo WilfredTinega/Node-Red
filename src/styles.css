@@ -40,6 +40,11 @@ body {
   font: 15px/1.5 'Poppins', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
+/* Persist the family everywhere: form controls don't inherit it by default,
+   and code stays monospace on purpose. */
+button, input, select, textarea, optgroup { font-family: inherit; }
+code, pre, kbd, samp { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; }
+
 h1, h2 { margin: 0 0 12px; line-height: 1.25; }
 h1 { font-size: 20px; }
 h2 { font-size: 17px; }
@@ -415,3 +420,80 @@ button.tag:hover { background: var(--hover); }
   border-radius: 6px;
 }
 .secret code { flex: 1; font-size: 16px; word-break: break-all; }
+
+/* ---------- action steps (shared by toasts and the activity log) ---------- */
+.steps-result { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+.steps-result li { color: var(--muted); }
+.steps-result li.ok { color: var(--ok); }
+.steps-result li.error { color: var(--danger); }
+
+/* ---------- toasts ---------- */
+.toast-host {
+  position: fixed;
+  z-index: 90; /* above dialogs */
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(400px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.18), 0 2px 6px rgb(0 0 0 / 0.08);
+  animation: toast-in 140ms ease-out;
+}
+.toast.ok { border-left-color: var(--ok); }
+.toast.error { border-left-color: var(--danger); }
+.toast-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.toast-title { font-size: 14px; }
+.toast-message { font-size: 13.5px; color: var(--muted); overflow-wrap: anywhere; }
+.toast.error .toast-message { color: var(--text); }
+.toast-close { flex: none; color: var(--muted); border-color: transparent; margin: -4px -4px 0 0; }
+.toast-close:hover { color: var(--text); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+@media (max-width: 800px) { .toast-host { left: 16px; right: 16px; width: auto; } }
+
+/* ---------- activity log ---------- */
+.activity-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.activity-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.activity-item:last-child { border-bottom: 0; }
+.activity-head { display: flex; align-items: center; gap: 8px; }
+.activity-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.activity-head .dot.ok { background: var(--ok); }
+.activity-head .dot.error { background: var(--danger); }
+.activity-time { margin-left: auto; color: var(--muted); font-size: 13px; }
+.activity-message { margin-top: 2px; color: var(--muted); font-size: 14px; }
+.activity-item.error .activity-message { color: var(--text); }
+
+/* ---------- skeleton loading ---------- */
+.skeleton {
+  display: inline-block;
+  background: linear-gradient(90deg, var(--hover) 25%, var(--border) 37%, var(--hover) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+.skeleton-lines { display: flex; flex-direction: column; gap: 10px; }
+@keyframes skeleton-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+.activity-meta { margin-top: 2px; color: var(--muted); font-size: 14px; }
+.activity-item.error .activity-meta { color: var(--text); }
+
+/* ---------- progress bar (running actions) ---------- */
+.progress { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+.progress-track { flex: 1; height: 6px; border-radius: 999px; background: var(--hover); overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 320ms ease; }
+.progress-label { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* Smooth button state changes (hover, disable, press). */
+button { transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease, opacity 130ms ease; }

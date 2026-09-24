@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react';
 import { api } from '../api.js';
-import { Card, ConfirmDialog, ErrorText, Notice, PageHeader, Status, formatWhen, shortSha, timeAgo, useAction, useLoad } from '../ui.jsx';
+import { Card, ConfirmDialog, ErrorText, Notice, PageHeader, SkeletonLines, Status, formatWhen, shortSha, timeAgo, useAction, useLoad } from '../ui.jsx';
 import './GithubPage.css';
 
 const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=repo,read:packages&description=Node-RED%20dashboard';
@@ -15,7 +15,7 @@ export default function GithubPage({ onAuthError }) {
   return (
     <>
       <PageHeader title="GitHub" />
-      {!state && (gh.error ? <Notice kind="error">{gh.error}</Notice> : <p className="muted">Loading…</p>)}
+      {!state && (gh.error ? <Notice kind="error">{gh.error}</Notice> : <Card className="page-card"><SkeletonLines lines={5} /></Card>)}
       {state && (
         <>
           {!state.canStoreSecrets && (

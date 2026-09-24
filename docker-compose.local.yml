@@ -70,6 +70,7 @@ services:
       IMAGES: 1
       ALLOW_RESTARTS: 1
       ALLOW_START: 1
+      EXEC: 1 # Docker Connect edits the container's settings.js via /exec
       POST: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

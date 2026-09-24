@@ -228,6 +228,41 @@ test('self-update.js: usage error, then a full swap against the mock', async () 
 
 // ---------- through the server ----------
 
+test('actions are recorded in the activity log with the user who ran them', async () => {
+  const nr = await fakeNodeRed({ login: 'credentials' });
+  d.state.list = [
+    { Id: id64('bbbb2222'), Names: ['/nodered-b'], Image: 'nodered/node-red:latest', State: 'running', Status: 'Up', Labels: {}, Mounts: [], Ports: [{ PrivatePort: 1880, PublicPort: nr.port, Type: 'tcp' }] },
+  ];
+  d.state.containers[id64('bbbb2222')] = freshNodeRed(); // so /restart finds it
+  const srv = await startServer({ env: { DOCKER_API: d.url, SCAN_HOST_PORTS: '0' } });
+  try {
+    const c = srv.client();
+    await c.login(ADMIN, ADMIN_PW);
+    assert.equal((await c.post('/api/instances/bbbb22220000/restart')).status, 200);
+    // A failed action is recorded too.
+    assert.equal((await c.post('/api/instances/nope00000000/restart')).status, 404);
+
+    const { entries } = (await c.get('/api/activity')).body;
+    const ok = entries.find((e) => e.action === 'restart' && e.ok);
+    assert.equal(ok.user, ADMIN);
+    assert.equal(ok.target, 'nodered-b');
+    assert.match(ok.at, /^\d{4}-\d\d-\d\dT/);
+    // It is durable: the same entries are on disk.
+    const onDisk = srv.readJson('activity.json');
+    assert.equal(onDisk[0].action, 'restart');
+    assert.equal(onDisk[0].user, ADMIN);
+
+    // Read-only users can't see the log.
+    await c.post('/api/users', { username: 'v', permissions: 'read', password: 'viewer-pass-1' });
+    const v = srv.client();
+    await v.login('v', 'viewer-pass-1');
+    assert.equal((await v.get('/api/activity')).status, 403);
+  } finally {
+    await srv.stop();
+    await nr.close();
+  }
+});
+
 test('restart/update endpoints only act on discovered Node-RED containers', async () => {
   const nr = await fakeNodeRed({ login: 'credentials' });
   d.state.list = [

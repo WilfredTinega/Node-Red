@@ -6,6 +6,7 @@ const PAGES = [
   { hash: 'users', label: 'Users' },
   { hash: 'backups', label: 'Backups' },
   { hash: 'github', label: 'GitHub' },
+  { hash: 'activity', label: 'Activity' },
   { hash: 'account', label: 'My account' },
 ];
 

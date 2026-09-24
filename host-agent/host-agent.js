@@ -45,12 +45,17 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').replace('T', 
 // ---- find the Node-RED process listening on <port> and how it is managed ----
 
 function pidOnPort(port) {
-  // ss shows the listening socket's owning pid.
-  const out = trySh('ss', ['-Hltnp', `sport = :${port}`]).out;
-  const m = out.match(/pid=(\d+)/);
-  if (m) return Number(m[1]);
-  // Fallback: scan /proc for a process with this port among its sockets is
-  // heavy; instead try lsof if present.
+  // List every listening TCP socket with its owning pid, then match the port.
+  // (Passing ss a "sport = :N" filter as one argv entry doesn't parse.)
+  const out = trySh('ss', ['-Hltnp']).out;
+  for (const line of out.split('\n')) {
+    const local = line.trim().split(/\s+/)[3] || ''; // e.g. 0.0.0.0:1880, [::]:1880, 127.0.0.1:1880
+    if (local.endsWith(`:${port}`)) {
+      const m = line.match(/pid=(\d+)/);
+      if (m) return Number(m[1]);
+    }
+  }
+  // Fallback if ss is unavailable or ran without pids.
   const l = trySh('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']);
   if (l.ok && l.out) return Number(l.out.split('\n')[0]);
   return null;

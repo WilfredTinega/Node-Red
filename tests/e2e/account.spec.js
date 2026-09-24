@@ -55,7 +55,7 @@ test.describe('my account', () => {
     await loginAs(page, 'account', { username: 'admin2@upande.com', password: 'admin2-password' });
     await expect(page.locator('.topbar .tag')).toHaveText('admin');
     const nav = page.getByRole('navigation', { name: 'Main' });
-    await expect(nav.getByRole('link')).toHaveText(['Instances', 'Users', 'Backups', 'GitHub', 'My account']);
+    await expect(nav.getByRole('link')).toHaveText(['Instances', 'Users', 'Backups', 'GitHub', 'Activity', 'My account']);
 
     const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Full access' }) });
     const button = card.getByRole('button', { name: 'Give up full access' });

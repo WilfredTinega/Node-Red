@@ -137,6 +137,38 @@ export function ErrorText({ children }) {
   return children ? <p className="error">{children}</p> : null;
 }
 
+// A shimmering placeholder shown while data loads. `w` is a CSS width.
+export function Skeleton({ w = '100%', h = 14, radius = 6, className = '' }) {
+  return <span className={`skeleton ${className}`} style={{ width: w, height: h, borderRadius: radius }} aria-hidden="true" />;
+}
+
+// A determinate progress bar with a percentage label. `percent` 0–100.
+export function ProgressBar({ percent, label }) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  return (
+    <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="progress-label">
+        {label ? `${label} ` : ''}
+        {pct}%
+      </span>
+    </div>
+  );
+}
+
+// A block of skeleton lines, for a loading list/table.
+export function SkeletonLines({ lines = 4 }) {
+  return (
+    <div className="skeleton-lines" role="status" aria-label="Loading">
+      {Array.from({ length: lines }, (_, i) => (
+        <Skeleton key={i} w={`${90 - (i % 3) * 15}%`} />
+      ))}
+    </div>
+  );
+}
+
 // kind: 'info' | 'ok' | 'warn' | 'error'
 export function Notice({ kind = 'info', children }) {
   return <div className={`notice ${kind}`}>{children}</div>;
@@ -366,6 +398,8 @@ const paths = {
   menu: 'M2.5 4h11M2.5 8h11M2.5 12h11',
   lock: 'M3 7h10v7H3zM5.5 7V5a2.5 2.5 0 015 0v2',
   logout: 'M6 14H3V2h3M10.5 11L14 8l-3.5-3M14 8H6',
+  close: 'M4 4l8 8M12 4l-8 8',
+  activity: 'M1.5 8h3l2-5 3 10 2-5h3',
   eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 10a2 2 0 100-4 2 2 0 000 4z',
   'eye-off': 'M1.5 8s2.5-4.5 6.5-4.5c1.2 0 2.3.4 3.2 1M14.5 8s-2.5 4.5-6.5 4.5c-1.2 0-2.3-.4-3.2-1M6.6 6.6a2 2 0 002.8 2.8M2 2l12 12',
 };

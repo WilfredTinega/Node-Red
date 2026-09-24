@@ -60,4 +60,6 @@ export const api = {
 
   getDashboard: () => request('GET', '/api/dashboard'),
   updateDashboard: () => request('POST', '/api/dashboard/update', {}),
+
+  getActivity: () => request('GET', '/api/activity'),
 };

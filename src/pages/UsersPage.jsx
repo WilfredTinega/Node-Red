@@ -13,6 +13,7 @@ import {
   PasswordChoice,
   PERMISSION_OPTIONS,
   ShownPassword,
+  SkeletonLines,
   useAction,
   useLoad,
 } from '../ui.jsx';
@@ -80,7 +81,7 @@ export default function UsersPage({ me, setMe, onAuthError }) {
         {settings.data && <ViewableSetting settings={settings.data} setSettings={settings.setData} onChanged={reload} onAuthError={onAuthError} />}
         <ErrorText>{settings.error}</ErrorText>
         <ErrorText>{error}</ErrorText>
-        {!users && !error && <p className="muted">Loading…</p>}
+        {!users && !error && <SkeletonLines lines={5} />}
         {list.length > 0 && (
           <div className="table-wrap">
             <table className="users-table">
@@ -436,7 +437,7 @@ function InstanceRows({ value, onChange, knownKeys, onAuthError }) {
     onChange(next);
   }
 
-  if (loading) return <p className="muted">Looking for instances…</p>;
+  if (loading) return <SkeletonLines lines={3} />;
 
   return (
     <div className="access-rows">

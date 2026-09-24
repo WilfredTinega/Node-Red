@@ -235,17 +235,20 @@ export function createDocker(api) {
     const old = await inspect(id);
     const dataMount = (old.Mounts || []).some((m) => m.Destination === '/data');
     if (!dataMount) throw new Error('the container has no /data mount, so its settings cannot be edited safely');
+    // Real newlines; the block contains single quotes, so it is passed to the
+    // shell as an argument ($1) and written with `printf %s` — never embedded in
+    // the script text, which would break the quoting and corrupt settings.js.
     const block =
-      `\\n// >>> nodered-user-admin: shared accounts (managed by the dashboard; do not edit)\\n` +
-      `process.env.NODERED_INSTANCE = process.env.NODERED_INSTANCE || '${hostPort}';\\n` +
-      `module.exports.adminAuth = require('/auth/adminAuth.js');\\n` +
-      `// <<< nodered-user-admin\\n`;
+      `\n// >>> nodered-user-admin: shared accounts (managed by the dashboard; do not edit)\n` +
+      `process.env.NODERED_INSTANCE = process.env.NODERED_INSTANCE || '${hostPort}';\n` +
+      `module.exports.adminAuth = require('/auth/adminAuth.js');\n` +
+      `// <<< nodered-user-admin\n`;
     // Idempotent: skip if the block is already there; back up before appending.
     const script =
       `f=/data/settings.js; [ -f "$f" ] || { echo "no settings.js"; exit 1; }; ` +
-      `grep -q "nodered-user-admin: shared accounts" "$f" || { cp "$f" "$f.bak-$(date +%Y%m%d-%H%M%S)"; printf '${block}' >> "$f"; }`;
+      `grep -q "nodered-user-admin: shared accounts" "$f" || { cp "$f" "$f.bak-$(date +%Y%m%d-%H%M%S)"; printf '%s' "$1" >> "$f"; }`;
     log('Editing settings.js…');
-    const r = await exec(id, ['sh', '-c', script]);
+    const r = await exec(id, ['sh', '-c', script, 'nrua', block]);
     if (r.code !== 0) throw new Error(`could not edit settings.js: ${r.output.trim() || `exit ${r.code}`}`);
     log('Recreating the container with the shared accounts mounted…');
     const newId = await recreate(id, old.Config.Image, {
