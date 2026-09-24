@@ -22,9 +22,15 @@
 .segmented button.selected { background: var(--accent-soft); border-color: var(--accent); }
 
 .steps { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
-.steps li { padding-left: 4px; }
+/* min-width: 0 so a long code line scrolls inside its block instead of widening the step. */
+.steps li { padding-left: 4px; min-width: 0; }
 .steps .codeblock { margin-top: 6px; }
 
 /* .main is a grid; without this a wide table stretches the page past the viewport. */
 .page-card { min-width: 0; }
 .instances-table th { position: relative; }
+
+/* Connect dialog: the short checklist above the install steps. */
+.before-title { margin: 12px 0 4px; font-weight: 500; }
+.before-steps { margin-bottom: 14px; gap: 4px; font-size: 14px; }
+.instances-table .tag.warn { margin-left: 6px; }

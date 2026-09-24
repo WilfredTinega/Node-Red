@@ -1,7 +1,14 @@
 # Local test stack: a Node-RED and the user admin page sharing ./local-test/auth.
 # Ports 1890/1891 because this machine already runs Node-RED on 1880 and the admin page on 1881.
+#
+# A plain `docker compose -f docker-compose.local.yml up -d` starts only the
+# dashboard and its Docker proxy. The test Node-RED below is opt-in:
+#   docker compose -f docker-compose.local.yml --profile test-nodered up -d
 services:
+  # Test instance only. Installing the dashboard never creates a Node-RED;
+  # this service exists so the dashboard has something to manage here.
   nodered:
+    profiles: ["test-nodered"]
     image: nodered/node-red
     container_name: nodered-test
     restart: unless-stopped
@@ -12,7 +19,8 @@ services:
       NODERED_INSTANCE: "1890"
     volumes:
       - ./local-test/nodered-data:/data
-      - ./local-test/auth:/auth
+      # Read-only: Node-RED only reads users.json and adminAuth.js.
+      - ./local-test/auth:/auth:ro
     # adminAuth.js is written by the admin page on start.
     depends_on:
       - nodered-user-admin
@@ -21,28 +29,38 @@ services:
     build: .
     container_name: nodered-user-admin-test
     restart: unless-stopped
-    network_mode: host
+    # Same topology as production (docker-compose.yml): compose network,
+    # host ports via host.docker.internal, host socket tables from /hostnet.
+    ports:
+      - "1891:1881"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./local-test/auth:/auth
       - ./local-test/secrets:/secrets
       - ./local-test/config:/config:ro
+      - /proc/1/net:/hostnet:ro
     environment:
-      PORT: "1891"
+      PORT: "1881"
+      PUBLIC_PORT: "1891" # the host port above, so the scan skips this page
       TZ: Africa/Nairobi
       AUTH_HOST_DIR: /home/tinega/nodered-user-admin/local-test/auth
       USERS_FILE: /auth/users.json
-      DOCKER_API: http://127.0.0.1:2375
+      DOCKER_API: http://docker-proxy:2375
+      PROBE_HOST: host.docker.internal
+      HOST_NET_DIR: /hostnet
       SECURE_COOKIE: "0"
+      # The local test instance keeps a known administrator password.
+      DEFAULT_ADMIN_PASSWORD: oponde9422
     depends_on:
       - docker-proxy
 
   # Local testing only: full write access so Update can be tried end to end.
+  # No ports: only the dashboard, on the compose network, can reach it.
   docker-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: nodered-user-admin-docker-proxy-test
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:2375:2375"
     environment:
       CONTAINERS: 1
       IMAGES: 1

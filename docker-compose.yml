@@ -5,43 +5,55 @@ services:
     image: ghcr.io/OWNER/REPO:latest
     container_name: nodered-user-admin
     restart: unless-stopped
-    # Host networking lets the page see every port the server listens on, so it
-    # finds Node-RED installed as a normal package as well as in containers.
-    # The page listens directly on the server's port 1881.
-    network_mode: host
+    # On the compose network, not the host's: only this container can reach
+    # the Docker proxy. The host's ports are probed through host.docker.internal
+    # and its listening ports are read from /hostnet (the host's /proc/1/net).
+    # Node-RED bound to 127.0.0.1 only is not visible this way; see DEPLOY.md
+    # for the host-network alternative.
+    ports:
+      - "1881:1881"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /opt/nodered-auth:/auth
-      # password.key, backup and GitHub settings. Only this container mounts it;
-      # back it up, because stored passwords and the token need the key.
+      # password.key, settings, backup and GitHub settings, the initial
+      # administrator password. Only this container mounts it; back it up,
+      # because stored passwords and the token need the key.
       - /opt/nodered-user-admin-secrets:/secrets
       # Optional instances.json: names for ports, and Node-RED on other machines.
       - /opt/nodered-user-admin-config:/config:ro
+      - /proc/1/net:/hostnet:ro
     environment:
       PORT: "1881"
       TZ: Africa/Nairobi # backup times are in this timezone
       USERS_FILE: /auth/users.json
-      DOCKER_API: http://127.0.0.1:2375
+      DOCKER_API: http://docker-proxy:2375
+      PROBE_HOST: host.docker.internal
+      HOST_NET_DIR: /hostnet
       PUBLIC_HOST: "94.237.25.175"
       # Set to "1" once this is served over HTTPS.
       SECURE_COOKIE: "0"
+      # Left unset on purpose: the first start makes a random administrator
+      # password and writes it to /opt/nodered-user-admin-secrets/initial-admin-password
+      # (readable by root and uid 10001 only). Set it here only for a throwaway install.
+      # DEFAULT_ADMIN_PASSWORD: ""
     depends_on:
       - docker-proxy
 
-  # Limits what the dashboard may ask Docker to do. Bound to 127.0.0.1 only.
+  # Limits what the dashboard may ask Docker to do. Reachable only from the
+  # compose network (no ports: every host process could otherwise use it).
   docker-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: nodered-user-admin-docker-proxy
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:2375:2375"
     environment:
-      CONTAINERS: 1 # list Node-RED containers
+      CONTAINERS: 1 # list and inspect Node-RED containers
       ALLOW_RESTARTS: 1 # the Restart button
       ALLOW_START: 1
       # The Update buttons (Node-RED instances and the dashboard itself) also
       # need IMAGES=1 and POST=1. That lets the dashboard create containers,
       # which is as powerful as root on this server: turn it on only once the
-      # dashboard is behind HTTPS and the default administrator password is changed.
+      # dashboard is behind HTTPS and the initial administrator password is changed.
       IMAGES: 0
       POST: 0
     volumes:

@@ -46,3 +46,11 @@
 /* .main is a grid; without this a wide table stretches the page past the viewport. */
 .page-card { min-width: 0; }
 .users-table th { position: relative; }
+
+/* Viewable-passwords setting at the top of the Accounts card. */
+.viewable-setting { display: grid; gap: 4px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.viewable-setting p { margin: 0; }
+
+/* Access shown as text for users whose access is set per instance. */
+.per-instance { display: inline-flex; align-items: center; min-height: 36px; padding: 0 2px; cursor: help; }
+.per-instance-note { margin: 0; font-size: 13.5px; }

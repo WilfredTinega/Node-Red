@@ -21,7 +21,11 @@ after(() => srv?.stop());
 test('PUT instances map, then null', async () => {
   await c.post('/api/users', { username: 'kim', permissions: 'read', password: 'kim-password-1' });
   let r = await c.put('/api/users/kim', { instances: { 1890: 'read', '10.0.0.5:1880': '*' } });
-  assert.deepEqual(r.body, { ok: true, password: null });
+  assert.deepEqual(r.body, {
+    ok: true,
+    password: null,
+    user: { username: 'kim', permissions: 'read', admin: false, locked: false, system: false, viewable: false, instances: { 1890: 'read', '10.0.0.5:1880': '*' } },
+  });
   let kim = (await c.get('/api/users')).body.find((u) => u.username === 'kim');
   assert.deepEqual(kim.instances, { 1890: 'read', '10.0.0.5:1880': '*' });
   assert.deepEqual(srv.readJson('users.json').find((u) => u.username === 'kim').instances, { 1890: 'read', '10.0.0.5:1880': '*' });
@@ -38,6 +42,38 @@ test('PUT instances map, then null', async () => {
   kim = (await c.get('/api/users')).body.find((u) => u.username === 'kim');
   assert.deepEqual(kim.instances, { 1890: 'read' });
   assert.equal(kim.permissions, '*');
+});
+
+test('"*" with an instances map is not an admin: Node-RED ignores the main permission, so does this page', async () => {
+  const kim = (await c.get('/api/users')).body.find((u) => u.username === 'kim');
+  assert.equal(kim.permissions, '*');
+  assert.equal(kim.admin, false);
+  const kc = srv.client();
+  await kc.login('kim', 'kim-password-1');
+  assert.equal((await kc.get('/api/me')).body.admin, false);
+  assert.equal((await kc.get('/api/users')).status, 403);
+  assert.equal((await kc.post('/api/users', { username: 'x', permissions: 'read', password: 'long-enough-pw' })).status, 403);
+  // Back to every instance: admin again.
+  await c.put('/api/users/kim', { instances: null });
+  assert.equal((await kc.get('/api/me')).body.admin, true);
+  assert.equal((await kc.get('/api/users')).status, 200);
+  await c.put('/api/users/kim', { instances: { 1890: 'read' } });
+  assert.equal((await kc.get('/api/users')).status, 403);
+
+  // Limiting the last admin to instances is refused like a demotion.
+  const saved = srv.readJson('users.json');
+  try {
+    await c.post('/api/users', { username: 'solo', permissions: '*', password: 'solo-password-1' });
+    const solo = srv.client();
+    await solo.login('solo', 'solo-password-1');
+    srv.writeJson('users.json', srv.readJson('users.json').filter((u) => u.username !== ADMIN));
+    const r = await solo.put('/api/users/solo', { instances: { 1890: '*' } });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /at least one admin/);
+    assert.equal(srv.readJson('users.json').find((u) => u.username === 'solo').instances, undefined);
+  } finally {
+    srv.writeJson('users.json', saved);
+  }
 });
 
 test('POST a user with an instances map', async () => {
@@ -130,6 +166,36 @@ test('adminAuth: access per instance', () => {
   assert.equal(run({ NODERED_INSTANCE: 'constructor' }).results[2].users, null);
 });
 
+test('adminAuth: in Docker without NODERED_INSTANCE, mapped users are refused and a warning is logged', () => {
+  const dir = authDir();
+  const dockerenv = path.join(tempDir('denv'), 'dockerenv');
+  fs.writeFileSync(dockerenv, '');
+  const run = (env) =>
+    spawnSync(process.execPath, [path.join(ROOT, 'tests/backend/fixtures/adminauth-probe.cjs'), path.join(dir, 'adminAuth.js'), JSON.stringify(PAIRS)], {
+      env: { PATH: process.env.PATH, ...env },
+      cwd: dir,
+      encoding: 'utf8',
+    });
+  const inDocker = run({ ADMINAUTH_DOCKERENV_FILE: dockerenv, PORT: '1890' });
+  assert.equal(inDocker.status, 0, inDocker.stderr);
+  assert.match(inDocker.stderr, /NODERED_INSTANCE is not set/);
+  assert.equal(inDocker.stderr.match(/NODERED_INSTANCE is not set/g).length, 1, 'warned once, not per login');
+  const [all, reader, mapped, none] = JSON.parse(inDocker.stdout).results;
+  assert.deepEqual(all.authenticate, { username: 'all', permissions: '*' }, 'unmapped users are unaffected');
+  assert.deepEqual(reader.users, { username: 'reader', permissions: 'read' });
+  assert.equal(mapped.authenticate, null, 'PORT is the container port, not the key: refused');
+  assert.equal(mapped.users, null);
+  assert.equal(none.authenticate, null);
+
+  const withKey = run({ ADMINAUTH_DOCKERENV_FILE: dockerenv, NODERED_INSTANCE: '1890' });
+  assert.equal(withKey.stderr, '');
+  assert.deepEqual(JSON.parse(withKey.stdout).results[2].authenticate, { username: 'mapped', permissions: 'read' });
+
+  const onHost = run({ ADMINAUTH_DOCKERENV_FILE: path.join(dir, 'no-such-file'), PORT: '1890' });
+  assert.equal(onHost.stderr, '');
+  assert.deepEqual(JSON.parse(onHost.stdout).results[2].authenticate, { username: 'mapped', permissions: 'read' }, 'a host install may fall back to PORT');
+});
+
 test('adminAuth: reads users.json on every login, and survives it missing', () => {
   const dir = authDir(null);
   const out = JSON.parse(
@@ -147,6 +213,7 @@ test('adminAuth: required from an ES module (no require.main) finds bcryptjs', a
   try {
     const require = createRequire(import.meta.url);
     const auth = require(path.join(dir, 'adminAuth.js'));
+    assert.equal(auth.sessionExpiryTime, 8 * 60 * 60, 'Node-RED sessions expire with the dashboard\'s, not after 7 days');
     assert.deepEqual(await auth.authenticate('mapped', 'mapped-pw'), { username: 'mapped', permissions: 'read' });
     assert.equal(await auth.authenticate('mapped', 'nope'), null);
     assert.equal(await auth.authenticate('mapped', undefined), null, 'a missing password is refused, not thrown');

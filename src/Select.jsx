@@ -41,9 +41,14 @@ export default function Select({ value, onChange, options, ariaLabel, disabled }
     setPos({ top, left: r.left, minWidth: r.width });
   }, [open]);
 
+  // Focus the list once it is placed: until then it is visibility:hidden and
+  // can't take focus, which left the arrow keys on the button.
+  useEffect(() => {
+    if (open && pos) listRef.current?.focus();
+  }, [open, pos]);
+
   useEffect(() => {
     if (!open) return;
-    listRef.current?.focus();
     const onPointer = (e) => {
       if (!listRef.current?.contains(e.target) && !buttonRef.current?.contains(e.target)) close(false);
     };
@@ -58,6 +63,17 @@ export default function Select({ value, onChange, options, ariaLabel, disabled }
       window.removeEventListener('scroll', onMove, true);
     };
   }, [open]);
+
+  // Disabling the button (e.g. while a change saves) drops keyboard focus to
+  // the page; put it back once it is enabled again.
+  const refocus = useRef(false);
+  useLayoutEffect(() => {
+    if (disabled) refocus.current = document.activeElement === buttonRef.current;
+    else if (refocus.current) {
+      refocus.current = false;
+      buttonRef.current?.focus();
+    }
+  }, [disabled]);
 
   function onButtonKey(e) {
     if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) {
@@ -80,6 +96,8 @@ export default function Select({ value, onChange, options, ariaLabel, disabled }
     };
     if (moves[e.key]) {
       if (e.key !== 'Tab') e.preventDefault();
+      // Escape closes only the list, not a dialog the Select is in.
+      if (e.key === 'Escape') e.stopPropagation();
       moves[e.key]();
     }
   }

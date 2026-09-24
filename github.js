@@ -27,7 +27,8 @@ export async function github(token, method, path, body, { raw = false, timeout =
   return data;
 }
 
-const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+// owner/name, where neither part is only dots: "../.." would walk the API path.
+const REPO_RE = /^(?!\.+\/)[\w.-]+\/(?!\.+$)[\w.-]+$/;
 export const normalizeRepo = (value) =>
   String(value || '')
     .trim()

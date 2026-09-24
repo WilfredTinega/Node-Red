@@ -16,6 +16,17 @@ const path = require('path');
 const USERS_FILE = path.join(__dirname, 'users.json');
 const INSTANCE = process.env.NODERED_INSTANCE || String(process.env.PORT || 1880);
 
+// In a container the fallback key (1880) is the container-side port, which is
+// not the host port the dashboard uses. Rather than let a user limited to
+// instances in through a wrong key, refuse them until NODERED_INSTANCE is set.
+// (The file to check can be pointed elsewhere for tests.)
+const IN_DOCKER = fs.existsSync(process.env.ADMINAUTH_DOCKERENV_FILE || '/.dockerenv');
+const KEY_UNKNOWN = IN_DOCKER && !process.env.NODERED_INSTANCE;
+if (KEY_UNKNOWN) {
+    console.warn('adminAuth: NODERED_INSTANCE is not set. Set it to this container\'s host port ' +
+        '(the key the admin page shows), or users limited to instances cannot log in here.');
+}
+
 // bcryptjs ships with Node-RED; find it next to whichever Node-RED is running.
 // require.main is Node-RED's red.js normally, but it is a process manager's
 // wrapper under pm2 and missing when an ES module loads this file, so the
@@ -53,6 +64,7 @@ function findUser(name) {
 function accessHere(u) {
     if (!u) return null;
     if (!u.instances) return u.permissions;
+    if (KEY_UNKNOWN) return null;
     return Object.prototype.hasOwnProperty.call(u.instances, INSTANCE) ? u.instances[INSTANCE] || null : null;
 }
 
@@ -63,6 +75,9 @@ function profile(u) {
 
 module.exports = {
     type: 'credentials',
+    // Node-RED keeps a session's permissions until it expires (7 days by
+    // default), so a change on the admin page took up to a week to bite.
+    sessionExpiryTime: 8 * 60 * 60,
     users: function (username) {
         return Promise.resolve(profile(findUser(username)));
     },

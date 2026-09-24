@@ -31,8 +31,9 @@ const instancesLabel = (map) => {
   return `${n} instance${n === 1 ? '' : 's'}`;
 };
 
-export default function UsersPage({ me, onAuthError }) {
+export default function UsersPage({ me, setMe, onAuthError }) {
   const { data: users, error, reload } = useLoad(api.listUsers, onAuthError);
+  const settings = useLoad(api.getSettings, onAuthError);
   const [rowErrors, setRowErrors] = useState({}); // username -> message
   const [saving, setSaving] = useState({}); // username -> true
   const [editing, setEditing] = useState(null); // user whose instance access is open
@@ -42,12 +43,24 @@ export default function UsersPage({ me, onAuthError }) {
 
   const setRowError = (username, message) => setRowErrors((e) => ({ ...e, [username]: message }));
 
+  // After an admin changes their own account, the shell must see it at once:
+  // losing admin access hides this page. Returns false when the page is going away.
+  const refreshMe = useCallback(
+    async (username, updated) => {
+      if (username !== me.username) return true;
+      const fresh = updated || (await api.me().catch(() => null));
+      if (fresh) setMe(fresh);
+      return !fresh || Boolean(fresh.admin);
+    },
+    [me.username, setMe],
+  );
+
   async function changePermissions(u, permissions) {
     setRowError(u.username, '');
     setSaving((s) => ({ ...s, [u.username]: true }));
     try {
-      await api.updateUser(u.username, { permissions });
-      await reload();
+      const res = await api.updateUser(u.username, { permissions });
+      if (await refreshMe(u.username, res.user)) await reload();
     } catch (err) {
       onAuthError(err);
       setRowError(u.username, err.message);
@@ -57,12 +70,15 @@ export default function UsersPage({ me, onAuthError }) {
   }
 
   const list = users || [];
+  const viewable = Boolean(settings.data?.viewablePasswords);
 
   return (
     <>
       <PageHeader title="Users" subtitle={users ? `${list.length} user${list.length === 1 ? '' : 's'}` : undefined} />
 
       <Card title="Accounts" className="page-card">
+        {settings.data && <ViewableSetting settings={settings.data} setSettings={settings.setData} onChanged={reload} onAuthError={onAuthError} />}
+        <ErrorText>{settings.error}</ErrorText>
         <ErrorText>{error}</ErrorText>
         {!users && !error && <p className="muted">Loading…</p>}
         {list.length > 0 && (
@@ -85,6 +101,7 @@ export default function UsersPage({ me, onAuthError }) {
                     key={u.username}
                     user={u}
                     isMe={u.username === me.username}
+                    viewable={viewable}
                     saving={Boolean(saving[u.username])}
                     error={rowErrors[u.username]}
                     onPermissions={(p) => changePermissions(u, p)}
@@ -112,9 +129,9 @@ export default function UsersPage({ me, onAuthError }) {
         <InstanceAccessDialog
           user={editing}
           onClose={() => setEditing(null)}
-          onSaved={() => {
+          onSaved={async (updated) => {
             setEditing(null);
-            reload();
+            if (await refreshMe(editing.username, updated)) reload();
           }}
           onAuthError={onAuthError}
         />
@@ -148,9 +165,13 @@ export default function UsersPage({ me, onAuthError }) {
   );
 }
 
-function UserRow({ user: u, isMe, saving, error, onPermissions, onInstances, onReset, onDelete, onAuthError }) {
+const PER_INSTANCE_WHY = 'Access is set per instance; such users cannot manage this dashboard';
+const SYSTEM_WHY = 'Used by scheduled backups';
+
+function UserRow({ user: u, isMe, viewable, saving, error, onPermissions, onInstances, onReset, onDelete, onAuthError }) {
   const lockedWhy = `${u.username} is the built-in administrator: it always has full access on every instance.`;
   const deleteWhy = u.locked ? `${u.username} cannot be deleted.` : isMe ? 'You cannot delete your own account.' : undefined;
+  const deleteTitle = deleteWhy || (u.system ? 'It is recreated at the next backup' : undefined);
 
   return (
     <>
@@ -158,18 +179,29 @@ function UserRow({ user: u, isMe, saving, error, onPermissions, onInstances, onR
         <td className="nowrap">
           {u.username}
           {isMe && <span className="tag">you</span>}
+          {u.system && (
+            <span className="tag" title={SYSTEM_WHY}>
+              system
+            </span>
+          )}
         </td>
         <td>
           {u.locked ? (
             <LockedBadge title={lockedWhy} />
+          ) : u.instances ? (
+            <span className="muted nowrap per-instance" title={PER_INSTANCE_WHY} aria-label={`Access for ${u.username}: per instance`}>
+              Per instance
+            </span>
           ) : (
-            <Select
-              value={typeof u.permissions === 'string' ? u.permissions : '*'}
-              onChange={onPermissions}
-              options={PERMISSION_OPTIONS}
-              ariaLabel={`Access for ${u.username}`}
-              disabled={saving}
-            />
+            <span title={u.system ? SYSTEM_WHY : undefined} className="disabled-wrap">
+              <Select
+                value={typeof u.permissions === 'string' ? u.permissions : '*'}
+                onChange={onPermissions}
+                options={PERMISSION_OPTIONS}
+                ariaLabel={`Access for ${u.username}`}
+                disabled={saving || u.system}
+              />
+            </span>
           )}
         </td>
         <td>
@@ -181,20 +213,28 @@ function UserRow({ user: u, isMe, saving, error, onPermissions, onInstances, onR
               </button>
             </span>
           ) : (
-            <button type="button" className="ghost instances-button" onClick={onInstances} aria-label={`Instances for ${u.username}: ${instancesLabel(u.instances)}`}>
-              {instancesLabel(u.instances)}
-            </button>
+            <span title={u.system ? SYSTEM_WHY : undefined} className="disabled-wrap">
+              <button
+                type="button"
+                className="ghost instances-button"
+                onClick={onInstances}
+                disabled={u.system}
+                aria-label={`Instances for ${u.username}: ${instancesLabel(u.instances)}`}
+              >
+                {instancesLabel(u.instances)}
+              </button>
+            </span>
           )}
         </td>
         <td>
-          <PasswordCell user={u} onAuthError={onAuthError} />
+          <PasswordCell user={u} viewable={viewable} onAuthError={onAuthError} />
         </td>
         <td>
           <div className="actions">
             <button className="ghost" onClick={onReset}>
               Reset password
             </button>
-            <span title={deleteWhy} className="disabled-wrap">
+            <span title={deleteTitle} className="disabled-wrap">
               <button className="ghost danger" onClick={onDelete} disabled={Boolean(deleteWhy)} aria-label={`Delete ${u.username}`}>
                 Delete
               </button>
@@ -215,8 +255,75 @@ function UserRow({ user: u, isMe, saving, error, onPermissions, onInstances, onR
   );
 }
 
+// ---------- viewable passwords setting ----------
+
+// On: an encrypted copy of each new password is kept so admins can Show it.
+// Off (the default): only the bcrypt hash exists, and turning it off deletes
+// every stored copy, so that asks first.
+function ViewableSetting({ settings, setSettings, onChanged, onAuthError }) {
+  const [asking, setAsking] = useState(false);
+  const { busy, error, setError, run } = useAction(onAuthError);
+  const on = Boolean(settings.viewablePasswords);
+  const canStore = settings.canStoreSecrets !== false;
+  const helpId = useId();
+
+  async function save(viewablePasswords) {
+    const next = await run(() => api.saveSettings({ viewablePasswords }));
+    if (next) {
+      setSettings(next);
+      setAsking(false);
+      onChanged();
+    }
+    return next;
+  }
+
+  return (
+    <div className="viewable-setting">
+      <div className="switch-row">
+        <span className="switch-label" id={`${helpId}-label`}>
+          Store passwords viewable
+        </span>
+        <span title={canStore ? undefined : 'The password key is missing, so passwords cannot be stored viewable.'} className="disabled-wrap">
+          <button
+            type="button"
+            role="switch"
+            className="switch"
+            aria-checked={on}
+            aria-labelledby={`${helpId}-label`}
+            aria-describedby={helpId}
+            disabled={busy || !canStore}
+            onClick={() => {
+              setError('');
+              if (on) setAsking(true);
+              else save(true);
+            }}
+          >
+            <span className="track" aria-hidden="true" />
+            {on ? 'On' : 'Off'}
+          </button>
+        </span>
+      </div>
+      <p className="muted small-text" id={helpId}>
+        {canStore
+          ? 'Off: only the password hash is stored (default). On: an encrypted copy is kept so admins can click Show.'
+          : 'The password key is missing, so passwords cannot be stored viewable. Only hashes are kept.'}
+      </p>
+      <ErrorText>{!asking && error}</ErrorText>
+      {asking && (
+        <ConfirmDialog title="Turn off viewable passwords?" confirmLabel="Turn off" busyLabel="Turning off…" danger onConfirm={() => save(false)} onClose={() => setAsking(false)} error={error} busy={busy}>
+          <p>
+            Every stored password copy is <strong>deleted now</strong>. Show stops working for all accounts; passwords set from now on are kept as hashes only.
+          </p>
+          <p className="muted">Logins are not affected. Reset a password to hand it out again.</p>
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}
+
 // Hidden by default; fetched from the server only when an admin clicks Show.
-function PasswordCell({ user, onAuthError }) {
+// viewable: the dashboard-wide setting; user.viewable: this account has a copy.
+function PasswordCell({ user, viewable, onAuthError }) {
   const [password, setPassword] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -227,9 +334,16 @@ function PasswordCell({ user, onAuthError }) {
     setError('');
   }, [user]);
 
+  if (!viewable) {
+    return (
+      <span className="muted nowrap" title="Only the password hash is stored. Turn on Store passwords viewable to keep a copy admins can show.">
+        Hashed
+      </span>
+    );
+  }
   if (!user.viewable) {
     return (
-      <span className="muted nowrap" title="Set before viewing was enabled. Reset it to make it viewable.">
+      <span className="muted nowrap" title="Set while passwords were stored as hashes only. Reset it to keep a viewable copy.">
         Not stored
       </span>
     );
@@ -311,6 +425,7 @@ function InstanceAccessChoice({ value, onChange, knownKeys = [], onAuthError, di
         <input type="radio" name={name} checked={chosen} onChange={() => onChange({ ...lastMap.current })} />
         Only chosen instances
       </label>
+      {chosen && <p className="muted per-instance-note">{PER_INSTANCE_WHY}.</p>}
       {chosen && <InstanceRows value={value} onChange={onChange} knownKeys={knownKeys} onAuthError={onAuthError} />}
     </fieldset>
   );
@@ -383,7 +498,7 @@ function InstanceAccessDialog({ user, onClose, onSaved, onAuthError }) {
     e.preventDefault();
     if (!hasChosen(value)) return setError('Choose at least one instance, or pick All instances.');
     const res = await run(() => api.updateUser(user.username, { instances: value }));
-    if (res) onSaved();
+    if (res) onSaved(res.user);
     return undefined;
   }
 

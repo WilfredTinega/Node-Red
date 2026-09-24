@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
-import { Icon } from './ui.jsx';
+import { Icon, PasswordInput } from './ui.jsx';
 import InstancesPage from './pages/InstancesPage.jsx';
 import UsersPage from './pages/UsersPage.jsx';
 import BackupsPage from './pages/BackupsPage.jsx';
@@ -65,7 +65,15 @@ function Shell({ me, setMe, onAuthError }) {
         <div className="who">
           <span className="who-name">{me.username}</span>
           <span className="tag">{me.admin ? 'admin' : 'read only'}</span>
-          <button className="ghost small" onClick={() => api.logout().finally(() => setMe(null))}>
+          <button
+            className="ghost small"
+            onClick={() =>
+              api
+                .logout()
+                .catch(() => {})
+                .finally(() => setMe(null))
+            }
+          >
             <Icon name="logout" size={14} /> Log out
           </button>
         </div>
@@ -73,7 +81,8 @@ function Shell({ me, setMe, onAuthError }) {
 
       <nav className="sidebar" aria-label="Main">
         {visible.map((p) => (
-          <a key={p.id} href={`#/${p.id}`} className={`nav-item${p.id === page.id ? ' active' : ''}`} aria-current={p.id === page.id ? 'page' : undefined}>
+          // onClick too: tapping the page already open changes no hash, so the menu would stay open.
+          <a key={p.id} href={`#/${p.id}`} className={`nav-item${p.id === page.id ? ' active' : ''}`} aria-current={p.id === page.id ? 'page' : undefined} onClick={() => setNavOpen(false)}>
             <Icon name={p.icon} />
             {p.label}
           </a>
@@ -88,11 +97,31 @@ function Shell({ me, setMe, onAuthError }) {
   );
 }
 
+// Counts down to `until` (a timestamp) once a second; null when it has passed.
+function useCountdown(until) {
+  const [left, setLeft] = useState(() => (until ? Math.max(0, until - Date.now()) : 0));
+  useEffect(() => {
+    if (!until) return undefined;
+    const tick = () => setLeft(Math.max(0, until - Date.now()));
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [until]);
+  return until && left > 0 ? left : null;
+}
+
+const formatCountdown = (ms) => {
+  const s = Math.ceil(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
 function Login({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState(null);
+  const lockLeft = useCountdown(lockedUntil);
 
   async function submit(e) {
     e.preventDefault();
@@ -101,7 +130,9 @@ function Login({ onLogin }) {
     try {
       onLogin(await api.login(username, password));
     } catch (err) {
-      setError(err.message);
+      // The server sends how long the lockout lasts; show it counting down.
+      if (err.data?.retryAfterMs) setLockedUntil(Date.now() + err.data.retryAfterMs);
+      setError(err.status === 429 ? '' : err.message);
     } finally {
       setBusy(false);
     }
@@ -112,17 +143,22 @@ function Login({ onLogin }) {
       <form className="card login" onSubmit={submit}>
         <img className="login-logo" src="/upande-logo.png" alt="Upande" width="64" height="64" />
         <h1>Node-RED</h1>
-        <p className="muted">Log in with your Node-RED account.</p>
         <label>
           Username
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required autoFocus />
         </label>
         <label>
           Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
-        {error && <p className="error">{error}</p>}
-        <button disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
+        {lockLeft ? (
+          <p className="error" role="status">
+            Too many failed attempts. Try again in <strong>{formatCountdown(lockLeft)}</strong>.
+          </p>
+        ) : (
+          error && <p className="error">{error}</p>
+        )}
+        <button disabled={busy || Boolean(lockLeft)}>{busy ? 'Logging in…' : 'Log in'}</button>
       </form>
     </main>
   );

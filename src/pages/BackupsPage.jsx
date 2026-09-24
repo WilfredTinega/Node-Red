@@ -106,7 +106,7 @@ export default function BackupsPage({ onAuthError }) {
           )}
           <StatusCard state={state} reload={backup.reload} setState={backup.setData} onAuthError={onAuthError} />
           <SettingsCard saved={state} setSaved={backup.setData} onAuthError={onAuthError} />
-          <HistoryCard history={state.history || []} />
+          <HistoryCard history={state.history || []} timeZone={state.timezone} />
         </>
       )}
     </>
@@ -149,11 +149,12 @@ function StatusCard({ state, reload, setState, onAuthError }) {
   else
     line = (
       <span>
-        Next backup <strong>{formatWhen(state.nextRunAt)}</strong> <span className="muted">({timeAgo(state.nextRunAt)})</span>
+        Next backup <strong>{formatWhen(state.nextRunAt, state.timezone)}</strong> <span className="muted">({timeAgo(state.nextRunAt)})</span>
       </span>
     );
 
   const last = state.history?.[0];
+  const tz = state.timezone;
 
   return (
     <Card
@@ -174,9 +175,10 @@ function StatusCard({ state, reload, setState, onAuthError }) {
         <p>{line}</p>
         {last && !running && (
           <p className="muted">
-            Last backup {timeAgo(last.at)}: {last.ok ? 'ok' : 'failed'}
+            Last backup {formatWhen(last.at, tz)} ({timeAgo(last.at)}): {last.ok ? 'ok' : 'failed'}
           </p>
         )}
+        {tz && (state.nextRunAt || last) && !running && <p className="muted small-text">Times in {tz}.</p>}
       </div>
       {test.error && <Notice kind="error">{test.error}</Notice>}
       {testResult && (
@@ -478,9 +480,10 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
 
 // ---------- history ----------
 
-function HistoryCard({ history }) {
+// Times are shown in the server's timezone, the one the branch names use.
+function HistoryCard({ history, timeZone }) {
   return (
-    <Card className="bk-card" title="History">
+    <Card className="bk-card" title="History" actions={timeZone && history.length > 0 ? <span className="muted small-text">Times in {timeZone}</span> : undefined}>
       {history.length === 0 ? (
         <p className="muted">No backups yet.</p>
       ) : (
@@ -502,7 +505,7 @@ function HistoryCard({ history }) {
                 return (
                   <tr key={h.at}>
                     <td className="bk-nowrap" title={timeAgo(h.at)}>
-                      {formatWhen(h.at)}
+                      {formatWhen(h.at, timeZone)}
                     </td>
                     <td>{formatTrigger(h.trigger)}</td>
                     <td>

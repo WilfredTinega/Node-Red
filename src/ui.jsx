@@ -68,10 +68,17 @@ export function useAction(onAuthError) {
 
 // ---------- formatting ----------
 
-export function formatWhen(iso) {
+// timeZone: an IANA name to render in (e.g. the server's), else the browser's.
+export function formatWhen(iso, timeZone) {
   if (!iso) return '—';
   const d = new Date(iso);
-  return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const opts = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+  try {
+    return d.toLocaleString(undefined, timeZone ? { ...opts, timeZone } : opts);
+  } catch {
+    // An unknown zone name: fall back to the browser's.
+    return d.toLocaleString(undefined, opts);
+  }
 }
 
 export function timeAgo(iso) {
@@ -153,30 +160,90 @@ export function CopyButton({ text, label = 'Copy' }) {
   );
 }
 
-// A code block with a copy button, for commands and settings snippets.
+// A code block with a copy button, for commands and settings snippets. The
+// button sits in its own bar, so long lines scroll under nothing.
 export function CodeBlock({ children }) {
   return (
     <div className="codeblock">
+      <div className="codeblock-bar">
+        <CopyButton text={children} />
+      </div>
       <pre>
         <code>{children}</code>
       </pre>
-      <CopyButton text={children} />
     </div>
   );
 }
 
 // ---------- dialogs ----------
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const isShown = (el) => el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+
+// A modal: focus moves inside when it opens (an autoFocus control wins, else the
+// first control), Tab cycles inside it, and closing puts focus back where it was.
 export function Dialog({ title, onClose, children, wide = false }) {
+  const ref = useRef(null);
+  // Taken during the first render: by the time effects run, an autoFocus
+  // control inside (ConfirmDialog's Cancel) already holds focus.
+  const opener = useRef(null);
+  if (opener.current === null) opener.current = document.activeElement || false;
+
   useEffect(() => {
-    const onKey = (e) => e.key === 'Escape' && onClose();
+    const el = ref.current;
+    // A dialog replacing another in one step (Reset password -> New password)
+    // saw a control that is gone now; the closed one has just restored focus.
+    if (!(opener.current && document.contains(opener.current))) opener.current = document.activeElement || false;
+    if (el && !el.contains(document.activeElement)) {
+      const first = [...el.querySelectorAll(FOCUSABLE)].find(isShown);
+      (first || el).focus();
+    }
+    return () => {
+      const o = opener.current;
+      // The opener may be gone (a deleted row): then leave focus where the browser put it.
+      if (o && typeof o.focus === 'function' && document.contains(o)) o.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') return onClose();
+      if (e.key !== 'Tab' || !ref.current) return undefined;
+      const items = [...ref.current.querySelectorAll(FOCUSABLE)].filter(isShown);
+      const active = document.activeElement;
+      const inside = ref.current.contains(active);
+      if (items.length === 0) {
+        e.preventDefault();
+        return ref.current.focus();
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!inside || (e.shiftKey && (active === first || active === ref.current))) {
+        e.preventDefault();
+        return (e.shiftKey ? last : first).focus();
+      }
+      if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        return first.focus();
+      }
+      return undefined;
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
   return (
-    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`card dialog${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+    <div
+      className="backdrop"
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        // Without this the browser moves focus to the page after the handler,
+        // undoing the focus we just gave back to the opener.
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      <div ref={ref} className={`card dialog${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <h2>{title}</h2>
         {children}
       </div>
@@ -199,6 +266,26 @@ export function ConfirmDialog({ title, children, confirmLabel, busyLabel, danger
         </button>
       </div>
     </Dialog>
+  );
+}
+
+// A password box with an eye button that shows or hides what was typed.
+export function PasswordInput({ value, onChange, autoComplete = 'current-password', ...rest }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <span className="password-field">
+      <input type={shown ? 'text' : 'password'} value={value} onChange={onChange} autoComplete={autoComplete} {...rest} />
+      <button
+        type="button"
+        className="ghost icon-button eye"
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        aria-pressed={shown}
+        title={shown ? 'Hide password' : 'Show password'}
+      >
+        <Icon name={shown ? 'eye-off' : 'eye'} />
+      </button>
+    </span>
   );
 }
 
@@ -259,6 +346,8 @@ const paths = {
   menu: 'M2.5 4h11M2.5 8h11M2.5 12h11',
   lock: 'M3 7h10v7H3zM5.5 7V5a2.5 2.5 0 015 0v2',
   logout: 'M6 14H3V2h3M10.5 11L14 8l-3.5-3M14 8H6',
+  eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 10a2 2 0 100-4 2 2 0 000 4z',
+  'eye-off': 'M1.5 8s2.5-4.5 6.5-4.5c1.2 0 2.3.4 3.2 1M14.5 8s-2.5 4.5-6.5 4.5c-1.2 0-2.3-.4-3.2-1M6.6 6.6a2 2 0 002.8 2.8M2 2l12 12',
 };
 
 export function Icon({ name, size = 16 }) {

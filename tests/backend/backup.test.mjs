@@ -2,20 +2,25 @@
 // fake GitHub and fake Node-REDs.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { fakeNodeRed, startServer, sleep, ADMIN, ADMIN_PW } from './helpers.mjs';
+import bcrypt from 'bcryptjs';
+import { fakeNodeRed, startServer, sleep, acceptsBackupAccount, ADMIN, ADMIN_PW, BACKUP_USER } from './helpers.mjs';
 import { githubMock, GOOD_TOKEN } from './github-mock.mjs';
 
-let gh, nrLogin, nrOpen, nrBroken, srv, c;
+let gh, nrLogin, nrOpen, nrBroken, nrRemote, srv, c;
 const FLOWS = [{ id: 'f1', type: 'tab', label: 'Main' }, { id: 'n1', type: 'debug', z: 'f1' }, { id: 'n2', type: 'inject', z: 'f1' }];
 
 before(async () => {
   gh = await githubMock();
-  nrLogin = await fakeNodeRed({ login: 'credentials', flows: FLOWS, users: { [ADMIN]: ADMIN_PW, backup: 'backup-pw-123' } });
+  // Accepts the dashboard's own backup account (its password is only in the
+  // server's files) and a hand-set login; the administrator is never valid here.
+  const users = (u, p) => (u === 'backup' && p === 'backup-pw-123') || acceptsBackupAccount(() => srv)(u, p);
+  nrLogin = await fakeNodeRed({ login: 'credentials', flows: FLOWS, users });
   nrOpen = await fakeNodeRed({ login: 'open' });
   nrBroken = await fakeNodeRed({ login: 'open', flowsStatus: 500 });
+  nrRemote = await fakeNodeRed({ login: 'credentials', users });
   srv = await startServer({ env: { GITHUB_API: gh.url, DOCKER_API: '', SCAN_HOST_PORTS: '0' } });
   srv.writeJson('instances.json', [
-    { name: 'Farm A', port: nrLogin.port },
+    { name: 'Farm A', port: nrLogin.port, sharedLogins: true },
     { name: 'Farm A', port: nrOpen.port },
     { name: 'Broken', port: nrBroken.port },
   ]);
@@ -24,14 +29,17 @@ before(async () => {
 });
 after(async () => {
   await srv?.stop();
-  await Promise.all([gh, nrLogin, nrOpen, nrBroken].map((s) => s?.close()));
+  await Promise.all([gh, nrLogin, nrOpen, nrBroken, nrRemote].map((s) => s?.close()));
 });
+
+const backupUser = () => srv.readJson('users.json').find((u) => u.username === BACKUP_USER);
 
 test('backups before GitHub is connected', async () => {
   const s = (await c.get('/api/backup')).body;
   assert.equal(s.githubConnected, false);
   assert.equal(s.nextRunAt, null);
-  assert.equal(s.defaultLoginUser, ADMIN);
+  assert.equal(s.defaultLoginUser, BACKUP_USER);
+  assert.equal(backupUser(), undefined, 'the backup account is only made when a backup needs it');
   assert.deepEqual(Object.keys(s).sort(), ['branchPrefix', 'canStoreSecrets', 'defaultLoginUser', 'githubConnected', 'history', 'loginSet', 'loginUser', 'nextRunAt', 'repo', 'running', 'schedule', 'timezone'].sort());
   const run = await c.post('/api/backup/run');
   assert.equal(run.status, 200);
@@ -138,9 +146,26 @@ test('first backup to an empty repo: README, tree, commit, dated branch', async 
   assert.equal(login.rev, 'rev-1');
   assert.match(e.instances.find((i) => !i.ok).error, /GET \/flows returned 500/);
 
-  // Logged in with read scope as the locked admin, then revoked the token.
+  // Logged in with read scope as the dashboard's own backup account, then revoked the token.
   assert.equal(nrLogin.tokenRequests.length, 1);
-  assert.deepEqual(nrLogin.tokenRequests[0], { client_id: 'node-red-admin', grant_type: 'password', scope: 'read', username: ADMIN, password: ADMIN_PW });
+  const sent = nrLogin.tokenRequests[0];
+  assert.deepEqual({ ...sent, password: '<checked below>' }, { client_id: 'node-red-admin', grant_type: 'password', scope: 'read', username: BACKUP_USER, password: '<checked below>' });
+  assert.notEqual(sent.password, ADMIN_PW);
+  assert.ok(sent.password.length >= 16);
+  // The account it made: read-only, marked system, hash only (never viewable).
+  const bu = backupUser();
+  assert.equal(bu.permissions, 'read');
+  assert.equal(bu.system, true);
+  assert.equal(bu.instances, undefined);
+  assert.equal(bu.secret, undefined);
+  assert.ok(bcrypt.compareSync(sent.password, bu.password));
+  // The plaintext lives only encrypted in backup.json.
+  const saved = srv.readJson('backup.json');
+  assert.match(saved.systemLoginSecret, /^v1:/);
+  assert.ok(!JSON.stringify(saved).includes(sent.password));
+  assert.equal(saved.loginUser, '', 'not shown as a hand-set login');
+  assert.equal((await c.get('/api/backup')).body.loginSet, false);
+  assert.equal((await c.get('/api/users')).body.find((u) => u.username === BACKUP_USER).system, true);
   const flowsReq = nrLogin.find('GET', '/flows').at(-1);
   assert.match(flowsReq.headers.authorization, /^Bearer tok-/);
   assert.equal(flowsReq.headers['node-red-api-version'], 'v2');
@@ -223,6 +248,84 @@ test('a refused Node-RED login fails only that instance', async () => {
   await c.put('/api/backup', { loginUser: '' });
 });
 
+test('the backup account heals itself: deleted or reset by hand, it gets a new password; the same one is reused otherwise', async () => {
+  const secretBefore = srv.readJson('backup.json').systemLoginSecret;
+  const hashBefore = backupUser().password;
+  await sleep(1100);
+  nrLogin.tokenRequests.length = 0;
+  let r = await c.post('/api/backup/run');
+  assert.equal(r.body.ok, true, r.body.message);
+  assert.equal(srv.readJson('backup.json').systemLoginSecret, secretBefore, 'still valid: kept');
+  assert.equal(backupUser().password, hashBefore);
+
+  // Deleted on the Users page: recreated with a fresh password.
+  assert.equal((await c.del(`/api/users/${BACKUP_USER}`)).status, 200);
+  await sleep(1100);
+  nrLogin.tokenRequests.length = 0;
+  r = await c.post('/api/backup/run');
+  assert.equal(r.body.ok, true, r.body.message);
+  assert.equal(nrLogin.tokenRequests[0].username, BACKUP_USER);
+  assert.notEqual(srv.readJson('backup.json').systemLoginSecret, secretBefore);
+  assert.notEqual(backupUser().password, hashBefore);
+  assert.equal(backupUser().system, true);
+
+  // Password reset by hand: the stored copy no longer matches, so it is rotated.
+  const users = srv.readJson('users.json');
+  users.find((u) => u.username === BACKUP_USER).password = bcrypt.hashSync('someone-changed-it', 4);
+  srv.writeJson('users.json', users);
+  const secretMid = srv.readJson('backup.json').systemLoginSecret;
+  await sleep(1100);
+  r = await c.post('/api/backup/run');
+  assert.equal(r.body.ok, true, r.body.message);
+  assert.equal(r.body.instances.find((i) => i.port === nrLogin.port).ok, true);
+  assert.notEqual(srv.readJson('backup.json').systemLoginSecret, secretMid);
+  assert.ok(!bcrypt.compareSync('someone-changed-it', backupUser().password));
+
+  // Across everything so far, the administrator's login was never sent anywhere.
+  for (const nr of [nrLogin, nrRemote]) assert.ok(nr.tokenRequests.every((t) => t.username !== ADMIN));
+});
+
+test('no login goes to instances outside the shared accounts, nor to other machines unless marked', async () => {
+  srv.writeJson('instances.json', [
+    { name: 'Not shared', port: nrLogin.port },
+    { name: 'Remote', host: '127.0.0.1', port: nrRemote.port },
+    { name: 'Open', port: nrOpen.port },
+  ]);
+  await sleep(1100);
+  nrLogin.clear();
+  nrLogin.tokenRequests.length = 0;
+  nrRemote.tokenRequests.length = 0;
+  let r = await c.post('/api/backup/run');
+  assert.equal(r.body.ok, true, r.body.message);
+  assert.equal(r.body.message, 'Backed up 1 of 3 instances (2 failed).');
+  assert.equal(r.body.instances.find((i) => i.name === 'Not shared').error, 'not using the shared accounts, no login sent');
+  assert.equal(r.body.instances.find((i) => i.name === 'Remote').error, 'not using the shared accounts, no login sent');
+  assert.equal(r.body.instances.find((i) => i.name === 'Open').ok, true);
+  assert.equal(nrLogin.tokenRequests.length, 0);
+  assert.equal(nrRemote.tokenRequests.length, 0);
+  assert.equal(nrLogin.find('GET', '/flows').length, 0, 'not even tried without a login');
+
+  // A hand-set login is held back the same way.
+  await c.put('/api/backup', { loginUser: 'backup', loginPassword: 'backup-pw-123' });
+  await sleep(1100);
+  r = await c.post('/api/backup/run');
+  assert.equal(nrLogin.tokenRequests.length + nrRemote.tokenRequests.length, 0);
+  await c.put('/api/backup', { loginUser: '' });
+
+  // Marked in instances.json: the remote one gets the login.
+  srv.writeJson('instances.json', [
+    { name: 'Not shared', port: nrLogin.port, sharedLogins: false },
+    { name: 'Remote', host: '127.0.0.1', port: nrRemote.port, sharedLogins: true },
+  ]);
+  await sleep(1100);
+  r = await c.post('/api/backup/run');
+  assert.equal(r.body.ok, true, r.body.message);
+  assert.equal(r.body.instances.find((i) => i.name === 'Remote').ok, true);
+  assert.equal(nrRemote.tokenRequests.length, 1);
+  assert.equal(nrRemote.tokenRequests[0].username, BACKUP_USER);
+  assert.equal(nrLogin.tokenRequests.length, 0);
+});
+
 test('every instance failing records a failed run', async () => {
   srv.writeJson('instances.json', [{ name: 'Broken', port: nrBroken.port }]);
   gh.clear();
@@ -238,6 +341,7 @@ test('every instance failing records a failed run', async () => {
 
 test('two runs in the same second get distinct branches', async () => {
   srv.writeJson('instances.json', [{ name: 'Open', port: nrOpen.port }]);
+  await sleep(1100); // a second no earlier test used
   const a = await c.post('/api/backup/run');
   const b = await c.post('/api/backup/run');
   assert.equal(a.body.ok, true, a.body.message);

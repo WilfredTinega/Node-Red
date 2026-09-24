@@ -4,10 +4,12 @@
 // the ports these tests opened.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mockServer, fakeNodeRed, startServer, ADMIN, ADMIN_PW } from './helpers.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { mockServer, fakeNodeRed, startServer, tempDir, ADMIN, ADMIN_PW } from './helpers.mjs';
 
 const closeLater = [];
-let nrA, nrB, nrH, nrOpen, nrOld, nrR, closedPort, dockerMock;
+let nrA, nrB, nrH, nrOpen, nrOld, nrR, closedPort, closedPort2, dockerMock;
 
 // A port nothing listens on: bind one, then close it.
 async function deadPort() {
@@ -28,6 +30,7 @@ before(async () => {
   );
   nrR = await fakeNodeRed({ login: 'credentials' }); // "another machine" from instances.json
   closedPort = await deadPort();
+  closedPort2 = await deadPort();
   closeLater.push(nrA, nrB, nrH, nrOpen, nrOld, nrR);
 
   const containers = [
@@ -42,7 +45,18 @@ before(async () => {
         { PrivatePort: 1234, Type: 'tcp' },
       ],
       Mounts: [{ Type: 'bind', Destination: '/auth' }],
+      env: [`NODERED_INSTANCE=${nrA.port}`, 'TZ=UTC'],
     }),
+    // Shared logins, but NODERED_INSTANCE says 1880 while the host port is another.
+    container({
+      id: '77775555',
+      name: 'nodered-wrongkey',
+      Image: 'nodered/node-red',
+      Ports: [{ IP: '0.0.0.0', PrivatePort: 1880, PublicPort: closedPort2, Type: 'tcp' }],
+      Mounts: [{ Type: 'bind', Destination: '/auth' }],
+      env: ['NODERED_INSTANCE=1880'],
+    }),
+    container({ id: '88885555', name: 'nodered-nokey', Image: 'nodered/node-red', Mounts: [{ Type: 'bind', Destination: '/auth' }], env: ['TZ=UTC'] }),
     container({
       id: 'bbbb2222',
       name: 'custom-flows',
@@ -59,12 +73,17 @@ before(async () => {
     container({ id: 'ffff6666', name: 'redis', Image: 'redis:7', Ports: [{ PrivatePort: 6379, PublicPort: 6399, Type: 'tcp' }] }),
     container({ id: '99996666', name: 'nodered-hidden', Image: 'nodered/node-red', Labels: { 'nodered-admin.instance': 'false' } }),
   ];
-  dockerMock = await mockServer((r) => (r.method === 'GET' && r.path === '/containers/json' ? { json: containers } : undefined));
+  dockerMock = await mockServer((r) => {
+    if (r.method === 'GET' && r.path === '/containers/json') return { json: containers };
+    const m = r.method === 'GET' && r.path.match(/^\/containers\/([0-9a-f]+)\/json$/);
+    const c = m && containers.find((x) => x.Id === m[1]);
+    return c ? { json: { Id: c.Id, Config: { Env: c.env || [] } } } : undefined;
+  });
   closeLater.push(dockerMock);
 });
 after(() => Promise.all(closeLater.map((s) => s.close())));
 
-const ours = () => new Set([nrA, nrB, nrH, nrOpen, nrOld, nrR].map((s) => s.port).concat(closedPort));
+const ours = () => new Set([nrA, nrB, nrH, nrOpen, nrOld, nrR].map((s) => s.port).concat(closedPort, closedPort2));
 
 async function instances(srv) {
   const c = srv.client();
@@ -100,11 +119,24 @@ test('docker discovery, with the port scan off', async () => {
       state: 'running',
       detail: 'Up 1 hour',
       sharedLogins: true,
+      instanceEnv: String(nrA.port),
+      keyMismatch: false,
       port: nrA.port,
       status: 'online',
       login: 'required',
       key: String(nrA.port),
     });
+    // Only shared-login containers are inspected for NODERED_INSTANCE.
+    const inspected = dockerMock.requests.filter((r) => /\/containers\/[0-9a-f]+\/json$/.test(r.path)).map((r) => r.path.split('/')[2].slice(0, 8)).sort();
+    assert.deepEqual(inspected, ['77775555', '88885555', 'aaaa1111']);
+
+    const wrong = body.instances.find((i) => i.name === 'nodered-wrongkey');
+    assert.equal(wrong.instanceEnv, '1880');
+    assert.equal(wrong.keyMismatch, true, 'NODERED_INSTANCE differs from the published host port');
+    assert.equal(wrong.key, String(closedPort2), 'the key the dashboard uses is still the host port');
+    const nokey = body.instances.find((i) => i.name === 'nodered-nokey');
+    assert.equal(nokey.instanceEnv, null);
+    assert.equal(nokey.keyMismatch, true, 'missing NODERED_INSTANCE');
 
     const b = body.instances.filter((i) => i.name === 'custom-flows');
     assert.deepEqual(b.map((i) => i.port).sort(), [nrB.port, closedPort].sort(), 'Node-RED off 1880: every TCP port');
@@ -112,6 +144,8 @@ test('docker discovery, with the port scan off', async () => {
     assert.equal(b.find((i) => i.port === nrB.port).status, 'online');
     assert.equal(b.find((i) => i.port === closedPort).status, 'unreachable');
     assert.equal(b[0].sharedLogins, false);
+    assert.equal(b[0].instanceEnv, null);
+    assert.equal(b[0].keyMismatch, false, 'not using the shared logins: the key does not matter');
 
     const stopped = body.instances.find((i) => i.name === 'nodered-stopped');
     assert.equal(stopped.port, null);
@@ -215,6 +249,46 @@ test('port scan finds host installs, parses versions and merges with docker', as
     // The fake GitHub/Docker mock and this dashboard's own port are not Node-RED.
     assert.ok(!body.instances.some((i) => i.port === dockerMock.port));
     assert.ok(!body.instances.some((i) => i.port === srv.port));
+  } finally {
+    await srv.stop();
+  }
+});
+
+// The socket tables in the kernel's format: one LISTEN (0A) row per port.
+function fakeProcNet(dir, v4Ports, v6Ports) {
+  const hex = (p) => p.toString(16).toUpperCase().padStart(4, '0');
+  const row = (addr, port) => `   0: ${addr}:${hex(port)} ${'0'.repeat(addr.length)}:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1 1 0000000000000000 100 0 0 10 0`;
+  const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+  fs.writeFileSync(path.join(dir, 'tcp'), [header, ...v4Ports.map(([addr, p]) => row(addr, p)), ''].join('\n'));
+  fs.writeFileSync(path.join(dir, 'tcp6'), [header, ...v6Ports.map(([addr, p]) => row(addr, p)), ''].join('\n'));
+}
+
+test("HOST_NET_DIR: the scan reads the host's tables from there, and skips the published PUBLIC_PORT", async () => {
+  const dir = tempDir('hostnet');
+  // nrH on every interface, nrOpen on ::1 only, nrOld is "the dashboard's published port".
+  fakeProcNet(dir, [['00000000', nrH.port], ['0100007F', nrOld.port]], [['00000000000000000000000001000000', nrOpen.port]]);
+  nrOld.clear();
+  const srv = await startServer({ env: { DOCKER_API: '', SCAN_HOST_PORTS: '1', HOST_NET_DIR: dir, PUBLIC_PORT: String(nrOld.port) } });
+  try {
+    const body = await instances(srv);
+    assert.deepEqual(body.errors, []);
+    // Exactly the fake table's Node-REDs: this machine's real ports were not read.
+    assert.deepEqual(body.instances.map((i) => i.port).sort(), [nrH.port, nrOpen.port].sort());
+    assert.equal(body.instances.find((i) => i.port === nrH.port).localOnly, false);
+    assert.equal(body.instances.find((i) => i.port === nrOpen.port).localOnly, true);
+    assert.equal(nrOld.find('GET', '/').length, 0, 'the published port is never probed');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('HOST_NET_DIR pointing nowhere: the scan finds nothing and reports no error', async () => {
+  const srv = await startServer({ env: { DOCKER_API: '', SCAN_HOST_PORTS: '1', HOST_NET_DIR: '/nonexistent/hostnet' } });
+  try {
+    srv.writeJson('instances.json', [{ name: 'Named', port: nrOpen.port }]);
+    const body = await instances(srv);
+    assert.deepEqual(body.errors, []);
+    assert.deepEqual(body.instances.map((i) => i.name), ['Named']);
   } finally {
     await srv.stop();
   }

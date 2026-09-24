@@ -1,7 +1,8 @@
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data = {}) {
     super(message);
     this.status = status;
+    this.data = data; // the rest of the error body, e.g. retryAfterMs on a lockout
   }
 }
 
@@ -16,7 +17,7 @@ async function request(method, url, body) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiError(res.status, data.error || `Request failed (${res.status})`, data);
   return data;
 }
 
@@ -27,6 +28,10 @@ export const api = {
   login: (username, password) => request('POST', '/api/login', { username, password }),
   logout: () => request('POST', '/api/logout'),
   changeOwnPassword: (current, next) => request('POST', '/api/me/password', { current, next }),
+  demoteSelf: () => request('POST', '/api/me/demote', {}),
+
+  getSettings: () => request('GET', '/api/settings'),
+  saveSettings: (settings) => request('PUT', '/api/settings', settings),
 
   listInstances: () => request('GET', '/api/instances'),
   restartInstance: (id) => request('POST', `/api/instances/${enc(id)}/restart`, {}),

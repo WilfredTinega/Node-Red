@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { api } from '../api.js';
-import { Card, MIN_PASSWORD, Notice, PageHeader } from '../ui.jsx';
+import { Card, ConfirmDialog, MIN_PASSWORD, Notice, PageHeader, PasswordInput, useAction } from '../ui.jsx';
 
-export default function AccountPage({ me, onAuthError }) {
+export default function AccountPage({ me, setMe, onAuthError }) {
   return (
     <>
       <PageHeader title="My account" />
@@ -11,14 +11,61 @@ export default function AccountPage({ me, onAuthError }) {
           <dt>Username</dt>
           <dd>{me.username}</dd>
           <dt>Access</dt>
-          <dd>{me.admin ? 'Full access (admin)' : 'Read only'}</dd>
+          <dd>{me.admin ? 'Full access (admin)' : me.instances ? 'Set per instance' : 'Read only'}</dd>
           <dt>Instances</dt>
           <dd>{me.instances ? `${Object.keys(me.instances).length} chosen instances` : 'All instances'}</dd>
         </dl>
         {me.locked && <Notice>This is the built-in administrator account. It always has full access and cannot be deleted.</Notice>}
       </Card>
+      {me.admin && <FullAccessCard me={me} setMe={setMe} onAuthError={onAuthError} />}
       <ChangePassword onAuthError={onAuthError} />
     </>
+  );
+}
+
+// An admin can step down to read only; only another admin can restore it.
+// The built-in administrator can't, so there is always a way back in.
+function FullAccessCard({ me, setMe, onAuthError }) {
+  const [asking, setAsking] = useState(false);
+  const { busy, error, setError, run } = useAction(onAuthError);
+
+  async function confirm() {
+    const user = await run(() => api.demoteSelf());
+    if (user) {
+      setAsking(false);
+      setMe(user);
+    }
+  }
+
+  return (
+    <Card title="Full access">
+      {me.locked ? (
+        <p className="muted">This account always keeps full access.</p>
+      ) : (
+        <>
+          <p>You have full access on this dashboard and on every instance.</p>
+          <button
+            type="button"
+            className="ghost danger"
+            onClick={() => {
+              setError('');
+              setAsking(true);
+            }}
+          >
+            Give up full access
+          </button>
+        </>
+      )}
+      {asking && (
+        <ConfirmDialog title="Give up full access?" confirmLabel="Give up full access" busyLabel="Saving…" danger onConfirm={confirm} onClose={() => setAsking(false)} error={error} busy={busy}>
+          <p>
+            Your account becomes <strong>read only</strong> on this dashboard and on every instance, immediately. You will no longer be able to manage
+            users, backups or GitHub here, or deploy flows.
+          </p>
+          <p>Only an admin can give you full access back.</p>
+        </ConfirmDialog>
+      )}
+    </Card>
   );
 }
 
@@ -52,15 +99,15 @@ function ChangePassword({ onAuthError }) {
       <form className="grid" onSubmit={submit}>
         <label>
           Current password
-          <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required />
+          <PasswordInput value={current} onChange={(e) => setCurrent(e.target.value)} required />
         </label>
         <label>
           New password
-          <input type="password" value={next} onChange={(e) => setNext(e.target.value)} minLength={MIN_PASSWORD} autoComplete="new-password" required />
+          <PasswordInput value={next} onChange={(e) => setNext(e.target.value)} minLength={MIN_PASSWORD} autoComplete="new-password" required />
         </label>
         <label>
           Repeat new password
-          <input type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" required />
+          <PasswordInput value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" required />
         </label>
         {message && <p className={message.ok ? 'ok' : 'error'}>{message.text}</p>}
         <div>

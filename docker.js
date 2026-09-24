@@ -112,6 +112,8 @@ export function createDocker(api) {
   async function recreate(id, ref, log = () => {}) {
     const old = await inspect(id);
     const name = old.Name.replace(/^\//, '');
+    // Stopping an --rm container deletes it and its anonymous volumes (its /data).
+    if (old.HostConfig?.AutoRemove) throw new Error(`${name} was started with --rm, so stopping it would delete it; recreate it by hand.`);
     const oldImage = await call('GET', `/images/${old.Image}/json`).catch(() => ({ Config: {} }));
     const config = withoutImageDefaults(old.Config, oldImage.Config || {});
     config.Image = ref;
@@ -123,7 +125,16 @@ export function createDocker(api) {
     // to Binds too would make create fail with "duplicate mount point".
     const hostConfig = { ...old.HostConfig };
     const binds = [...(hostConfig.Binds || [])];
-    const mounted = new Set((hostConfig.Mounts || []).map((m) => m.Target));
+    // An anonymous --mount (compose's `- /data`) has no Source; give it the
+    // volume the old container used, or the new one gets a fresh, empty one.
+    const volumeAt = (target) => (old.Mounts || []).find((m) => m.Type === 'volume' && m.Destination === target)?.Name;
+    hostConfig.Mounts = (hostConfig.Mounts || []).map((m) =>
+      m.Type === 'volume' && !m.Source && volumeAt(m.Target) ? { ...m, Source: volumeAt(m.Target) } : m,
+    );
+    if (hostConfig.Mounts.some((m) => m.Type === 'volume' && !m.Source)) {
+      throw new Error(`${name} has a volume Docker can't name; recreate it by hand.`);
+    }
+    const mounted = new Set(hostConfig.Mounts.map((m) => m.Target));
     for (const m of old.Mounts || []) {
       if (m.Type === 'volume' && !mounted.has(m.Destination) && !binds.some((b) => b.split(':')[1] === m.Destination)) {
         binds.push(`${m.Name}:${m.Destination}${m.RW ? '' : ':ro'}`);
@@ -139,7 +150,12 @@ export function createDocker(api) {
     const backupName = `${name}-before-update-${Date.now()}`;
     log(`Stopping ${name}…`);
     await call('POST', `/containers/${id}/stop?t=20`, null, 60000);
-    await call('POST', `/containers/${id}/rename?name=${encodeURIComponent(backupName)}`);
+    try {
+      await call('POST', `/containers/${id}/rename?name=${encodeURIComponent(backupName)}`);
+    } catch (e) {
+      if (old.State?.Running !== false) await call('POST', `/containers/${id}/start`).catch(() => {});
+      throw new Error(`Update failed and ${name} was restored: ${e.message}`);
+    }
 
     let created = null;
     try {
@@ -157,29 +173,35 @@ export function createDocker(api) {
       // Put the old container back exactly as it was.
       if (created) await call('DELETE', `/containers/${created.Id}?force=true`).catch(() => {});
       await call('POST', `/containers/${id}/rename?name=${encodeURIComponent(name)}`).catch(() => {});
-      await call('POST', `/containers/${id}/start`).catch(() => {});
+      if (old.State?.Running !== false) await call('POST', `/containers/${id}/start`).catch(() => {});
       throw new Error(`Update failed and ${name} was restored: ${e.message}`);
     }
+    // No v=1 and no force: the old container's volumes stay, even anonymous ones.
     await call('DELETE', `/containers/${id}`).catch(() => {});
     return created.Id;
   }
 
-  // The running container carrying `role` (e.g. this dashboard itself).
-  async function findByRole(role) {
+  // The running container carrying `role` (e.g. this dashboard itself). With
+  // `ownId` (this process's own container) only that one counts; without it,
+  // more than one match is refused rather than guessed.
+  async function findByRole(role, ownId = null) {
     const filters = encodeURIComponent(JSON.stringify({ label: [`nodered-admin.role=${role}`], status: ['running'] }));
-    const list = await call('GET', `/containers/json?filters=${filters}`);
+    const list = (await call('GET', `/containers/json?filters=${filters}`)).filter((c) => !c.Labels || c.Labels['nodered-admin.role'] === role);
+    if (ownId) return list.find((c) => c.Id.startsWith(ownId) || ownId.startsWith(c.Id)) || null;
+    if (list.length > 1) throw new Error(`${list.length} running containers are labelled nodered-admin.role=${role}; stop the extra ones first.`);
     return list[0] || null;
   }
 
-  // Starts a throwaway container from `image` that runs `cmd` on the host
-  // network (so it can reach the Docker proxy) and removes itself afterwards.
-  async function runHelper(image, cmd, env) {
+  // Starts a throwaway container from `image` that runs `cmd` on `network`
+  // (the caller's own, so it reaches the Docker proxy the same way) and
+  // removes itself afterwards.
+  async function runHelper(image, cmd, env, network = 'host') {
     const helper = await call('POST', '/containers/create', {
       Image: image,
       Cmd: cmd,
       Env: env,
       Labels: { 'nodered-admin.role': 'updater' },
-      HostConfig: { NetworkMode: 'host', AutoRemove: true },
+      HostConfig: { NetworkMode: network, AutoRemove: true },
     });
     await call('POST', `/containers/${helper.Id}/start`);
     return helper.Id;

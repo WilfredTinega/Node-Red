@@ -43,11 +43,14 @@ export async function dockerMock(opts = {}) {
     roleList: opts.roleList || [],
     pullBody: '{"status":"Pulling from nodered/node-red"}\n{"status":"Digest: sha256:abc"}\n{"status":"Status: Downloaded newer image"}\n',
     pullStatus: 200,
+    pullDelay: 0,
     // image name -> Id, for GET /images/<name>/json
     images: { [OLD_IMAGE]: { Id: OLD_IMAGE, Config: { Env: ['PATH=/usr/local/bin', 'NODE_RED_VERSION=v4.0.8'], Cmd: ['npm', 'start'], WorkingDir: '/usr/src/node-red', Labels: { 'org.opencontainers.image.version': '4.0.8' } } } },
     pulledId: OLD_IMAGE,
     newRunning: true,
     startFails: false,
+    createFails: false,
+    renameFails: false,
     restartDelay: 0,
     created: 0,
   };
@@ -59,7 +62,7 @@ export async function dockerMock(opts = {}) {
       return { json: u.searchParams.get('filters') ? state.roleList : state.list };
     }
     if (r.method === 'POST' && p === '/images/create') {
-      return { status: state.pullStatus, text: state.pullBody, headers: { 'Content-Type': 'application/json' } };
+      return { status: state.pullStatus, text: state.pullBody, headers: { 'Content-Type': 'application/json' }, delay: state.pullDelay };
     }
     if (r.method === 'GET' && (m = p.match(/^\/images\/(.+)\/json$/))) {
       const name = decodeURIComponent(m[1]);
@@ -67,6 +70,7 @@ export async function dockerMock(opts = {}) {
       return { json: { Id: state.pulledId, Config: {} } };
     }
     if (r.method === 'POST' && p === '/containers/create') {
+      if (state.createFails) return { status: 403, text: 'Forbidden' };
       const newId = id64(`new${++state.created}`);
       state.containers[newId] = { Id: newId, Name: `/${u.searchParams.get('name') || 'helper'}`, State: { Running: state.newRunning, ExitCode: state.newRunning ? 0 : 1 }, Config: r.body };
       return { status: 201, json: { Id: newId, Warnings: [] } };
@@ -81,6 +85,7 @@ export async function dockerMock(opts = {}) {
       if (r.method === 'POST' && action === '/restart') return { status: 204, text: '', delay: state.restartDelay };
       if (r.method === 'POST' && action === '/stop') return { status: 204, text: '' };
       if (r.method === 'POST' && action === '/rename') {
+        if (state.renameFails) return { status: 500, json: { message: 'rename failed (test)' } };
         c.Name = `/${u.searchParams.get('name')}`;
         return { status: 204, text: '' };
       }

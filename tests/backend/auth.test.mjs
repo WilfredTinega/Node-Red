@@ -5,32 +5,55 @@ import path from 'node:path';
 import { startServer, ADMIN, ADMIN_PW, ROOT } from './helpers.mjs';
 
 let srv;
+const extra = [];
 before(async () => {
   // No users.json at all: a fresh install.
   srv = await startServer();
 });
-after(() => srv?.stop());
+after(async () => {
+  await srv?.stop();
+  await Promise.all(extra.map((s) => s.stop()));
+});
 
-test('fresh install creates the locked admin with DEFAULT_ADMIN_PASSWORD', async () => {
+test('fresh install creates the locked admin with DEFAULT_ADMIN_PASSWORD, hash only', async () => {
   const users = srv.readJson('users.json');
   assert.equal(users.length, 1);
   assert.equal(users[0].username, ADMIN);
   assert.equal(users[0].permissions, '*');
   assert.match(users[0].password, /^\$2a\$10\$/);
-  assert.match(users[0].secret, /^v1:/);
+  assert.equal(users[0].secret, undefined, 'no viewable copy unless the setting is on');
   assert.equal(users[0].instances, undefined);
+  // Every Node-RED reads it, whatever uid it runs as; only the dashboard writes it.
+  assert.equal(fs.statSync(path.join(srv.dir, 'users.json')).mode & 0o777, 0o644);
+  assert.ok(!fs.existsSync(path.join(srv.dir, 'initial-admin-password')), 'no password file when one was given');
   // The shared login module is installed next to users.json, unchanged.
   const installed = fs.readFileSync(path.join(srv.dir, 'adminAuth.js'), 'utf8');
   assert.equal(installed, fs.readFileSync(path.join(ROOT, 'nodered', 'adminAuth.js'), 'utf8'));
   const key = fs.readFileSync(path.join(srv.dir, 'password.key'), 'utf8').trim();
   assert.match(key, /^[0-9a-f]{64}$/);
+  assert.equal(fs.statSync(path.join(srv.dir, 'password.key')).mode & 0o777, 0o600);
+});
+
+test('without DEFAULT_ADMIN_PASSWORD a random one is written to INITIAL_PASSWORD_FILE and never logged', async () => {
+  const s = await startServer({ env: { DEFAULT_ADMIN_PASSWORD: '' } });
+  extra.push(s);
+  const file = path.join(s.dir, 'initial-admin-password');
+  const password = fs.readFileSync(file, 'utf8').trim();
+  assert.ok(password.length >= 16, password);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const lines = s.log().split('\n').filter((l) => l.includes('Initial administrator password'));
+  assert.deepEqual(lines, [`Initial administrator password written to ${file}`]);
+  assert.ok(!s.log().includes(password), 'the password itself is not in the log');
+  assert.equal(s.readJson('users.json')[0].secret, undefined);
+  const r = await s.client().login(ADMIN, password);
+  assert.equal(r.body.locked, true);
 });
 
 test('login, /api/me and logout', async () => {
   const c = srv.client();
   assert.equal((await c.get('/api/me')).status, 401);
   const r = await c.login(ADMIN, ADMIN_PW);
-  assert.deepEqual(r.body, { username: ADMIN, permissions: '*', admin: true, locked: true, viewable: true, instances: null });
+  assert.deepEqual(r.body, { username: ADMIN, permissions: '*', admin: true, locked: true, system: false, viewable: false, instances: null });
   const setCookie = r.headers.get('set-cookie');
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Strict/);
@@ -155,13 +178,27 @@ test('a user removed from users.json by hand loses access at once', async () => 
 });
 
 // Last, because it locks out 127.0.0.1 for this server.
-test('five failures lock the address out, even for the right password', async () => {
+test('five failures lock the address out, even for the right password, and say for how long', async () => {
   const c = srv.client();
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     const r = await c.post('/api/login', { username: ADMIN, password: `wrong-${i}-xxxxxx` });
     assert.equal(r.status, 401, `attempt ${i + 1}`);
+    assert.deepEqual(r.body, { error: 'Wrong username or password.' });
+    assert.equal(r.headers.get('retry-after'), null);
   }
+  // The fifth failure trips the lock and already carries the countdown.
+  const fifth = await c.post('/api/login', { username: ADMIN, password: 'wrong-4-xxxxxx' });
+  assert.equal(fifth.status, 401);
+  assert.equal(fifth.body.error, 'Wrong username or password.');
+  assert.ok(fifth.body.retryAfterMs > 14 * 60 * 1000 && fifth.body.retryAfterMs <= 15 * 60 * 1000, String(fifth.body.retryAfterMs));
+  assert.equal(fifth.headers.get('retry-after'), String(Math.ceil(fifth.body.retryAfterMs / 1000)));
+
   const locked = await c.post('/api/login', { username: ADMIN, password: ADMIN_PW });
   assert.equal(locked.status, 429);
-  assert.match(locked.body.error, /15 minutes/);
+  assert.deepEqual(Object.keys(locked.body).sort(), ['error', 'retryAfterMs']);
+  assert.equal(locked.body.error, 'Too many failed attempts.');
+  assert.ok(locked.body.retryAfterMs > 0 && locked.body.retryAfterMs <= fifth.body.retryAfterMs);
+  const header = Number(locked.headers.get('retry-after'));
+  assert.ok(Number.isInteger(header) && header >= 1 && header <= 900, locked.headers.get('retry-after'));
+  assert.equal(header, Math.ceil(locked.body.retryAfterMs / 1000), 'whole seconds, rounded up');
 });

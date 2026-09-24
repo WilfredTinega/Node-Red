@@ -1,7 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
-import { startServer, tempDir, ADMIN, ADMIN_PW } from './helpers.mjs';
+import fs from 'node:fs';
+import { startServer, tempDir, ADMIN, ADMIN_PW, BACKUP_USER } from './helpers.mjs';
 
 const servers = [];
 const start = async (opts) => {
@@ -17,9 +18,14 @@ async function adminClient(srv) {
   return c;
 }
 
-test('add, list, view and reset passwords (encrypted secret round trip)', async () => {
+test('add, list, view and reset passwords (encrypted secret round trip, viewable passwords on)', async () => {
   const srv = await start();
   const c = await adminClient(srv);
+  assert.deepEqual((await c.get('/api/settings')).body, { viewablePasswords: false, canStoreSecrets: true });
+  const on = await c.put('/api/settings', { viewablePasswords: true });
+  assert.deepEqual(on.body, { viewablePasswords: true, canStoreSecrets: true });
+  assert.deepEqual(srv.readJson('settings.json'), { viewablePasswords: true });
+  assert.equal(fs.statSync(`${srv.dir}/settings.json`).mode & 0o777, 0o600);
 
   const add = await c.post('/api/users', { username: ' erin ', permissions: 'read', password: 'erin-password-1' });
   assert.equal(add.status, 201);
@@ -45,7 +51,7 @@ test('add, list, view and reset passwords (encrypted secret round trip)', async 
   await srv.client().login('frank', gen.body.password);
 
   const reset = await c.put('/api/users/erin', { password: 'erin-password-2' });
-  assert.deepEqual(reset.body, { ok: true, password: null });
+  assert.deepEqual(reset.body, { ok: true, password: null, user: { username: 'erin', permissions: 'read', admin: false, locked: false, system: false, viewable: true, instances: null } });
   assert.equal((await c.get('/api/users/erin/password')).body.password, 'erin-password-2');
   await srv.client().login('erin', 'erin-password-2');
 
@@ -55,7 +61,7 @@ test('add, list, view and reset passwords (encrypted secret round trip)', async 
     [ADMIN, 'erin', 'frank'],
   );
   const erin = list.body.find((u) => u.username === 'erin');
-  assert.deepEqual(erin, { username: 'erin', permissions: 'read', admin: false, locked: false, viewable: true, instances: null });
+  assert.deepEqual(erin, { username: 'erin', permissions: 'read', admin: false, locked: false, system: false, viewable: true, instances: null });
   // Never the hash or the secret.
   assert.ok(!list.text.includes('$2a$'));
   assert.ok(!list.text.includes('v1:'));
@@ -64,10 +70,55 @@ test('add, list, view and reset passwords (encrypted secret round trip)', async 
   assert.equal((await c.put('/api/users/nobody', { permissions: 'read' })).status, 404);
   assert.equal((await c.del('/api/users/nobody')).status, 404);
 
-  // Non-admins can't view passwords.
+  // Non-admins can't view passwords, or see or change the setting.
   const erinC = srv.client();
   await erinC.login('erin', 'erin-password-2');
   assert.equal((await erinC.get('/api/users/frank/password')).status, 403);
+  assert.equal((await erinC.get('/api/settings')).status, 403);
+  assert.equal((await erinC.put('/api/settings', { viewablePasswords: false })).status, 403);
+});
+
+test('passwords are hashed only by default; turning viewing off strips every stored copy at once', async () => {
+  const srv = await start();
+  const c = await adminClient(srv);
+  await c.post('/api/users', { username: 'hana', permissions: 'read', password: 'hana-password-1' });
+  assert.equal(srv.readJson('users.json').find((u) => u.username === 'hana').secret, undefined);
+  assert.equal((await c.get('/api/users')).body.find((u) => u.username === 'hana').viewable, false);
+  const off = await c.get('/api/users/hana/password');
+  assert.equal(off.status, 409);
+  assert.match(off.body.error, /turned off in Settings/);
+
+  await c.put('/api/settings', { viewablePasswords: true });
+  // Existing hashes can't be turned into viewable copies; a reset can.
+  const stale = await c.get('/api/users/hana/password');
+  assert.equal(stale.status, 404);
+  assert.match(stale.body.error, /Reset it/);
+  await c.put('/api/users/hana', { password: 'hana-password-2' });
+  await c.post('/api/users', { username: 'ivan', permissions: 'read', password: 'ivan-password-1' });
+  assert.equal((await c.get('/api/users/hana/password')).body.password, 'hana-password-2');
+  assert.equal(srv.readJson('users.json').filter((u) => u.secret).length, 2);
+
+  const back = await c.put('/api/settings', { viewablePasswords: false });
+  assert.deepEqual(back.body, { viewablePasswords: false, canStoreSecrets: true });
+  assert.equal(srv.readJson('users.json').filter((u) => u.secret).length, 0, 'every secret is gone');
+  assert.equal((await c.get('/api/users/hana/password')).status, 409);
+  for (const u of (await c.get('/api/users')).body) assert.equal(u.viewable, false);
+  // The logins still work: only the hashes matter to Node-RED and to this page.
+  await srv.client().login('hana', 'hana-password-2');
+  await srv.client().login('ivan', 'ivan-password-1');
+  for (const body of [{}, { viewablePasswords: 'yes' }, { viewablePasswords: 1 }]) {
+    assert.equal((await c.put('/api/settings', body)).status, 400, JSON.stringify(body));
+  }
+});
+
+test('the setting file is read on start', async () => {
+  const dir = tempDir('set');
+  fs.writeFileSync(`${dir}/settings.json`, '{"viewablePasswords":true}\n');
+  const srv = await start({ dir });
+  const c = await adminClient(srv);
+  assert.equal((await c.get('/api/settings')).body.viewablePasswords, true);
+  assert.match(srv.readJson('users.json')[0].secret, /^v1:/, 'the admin created on this start is viewable');
+  assert.equal((await c.get(`/api/users/${ADMIN}/password`)).body.password, ADMIN_PW);
 });
 
 test('validation: username, permissions, password length, duplicates', async () => {
@@ -105,6 +156,7 @@ test('$2y$ hashes (PHP) are accepted at login', async () => {
   assert.equal(r.status, 200);
   assert.equal(r.body.viewable, false, 'no secret stored for hand-made hashes');
   const c = await adminClient(srv);
+  await c.put('/api/settings', { viewablePasswords: true });
   const view = await c.get('/api/users/php/password');
   assert.equal(view.status, 404);
   assert.match(view.body.error, /Reset it/);
@@ -192,10 +244,87 @@ test('viewing is disabled without a usable key, and setting passwords still work
   // A key file with the wrong length disables viewing instead of crashing.
   const fs = await import('node:fs');
   fs.writeFileSync(`${dir}/password.key`, 'abcd\n');
+  fs.writeFileSync(`${dir}/settings.json`, '{"viewablePasswords":true}\n');
   const srv = await start({ dir });
   const c = await adminClient(srv);
+  assert.deepEqual((await c.get('/api/settings')).body, { viewablePasswords: true, canStoreSecrets: false });
   assert.equal((await c.get('/api/me')).body.viewable, false);
   assert.equal((await c.post('/api/users', { username: 'jo', permissions: 'read', password: 'jo-password-1' })).status, 201);
   assert.equal(srv.readJson('users.json').find((u) => u.username === 'jo').secret, undefined);
   assert.equal((await c.get('/api/users/jo/password')).status, 503);
+  // Without a key the setting can be turned off but not on.
+  assert.equal((await c.put('/api/settings', { viewablePasswords: false })).status, 200);
+  const on = await c.put('/api/settings', { viewablePasswords: true });
+  assert.equal(on.status, 400);
+  assert.match(on.body.error, /key is missing/);
+  assert.equal((await c.get('/api/users/jo/password')).status, 409);
+});
+
+test('an admin can give up full access, the locked admin cannot', async () => {
+  const srv = await start();
+  const c = await adminClient(srv);
+  await c.post('/api/users', { username: 'gina', permissions: '*', password: 'gina-password-1' });
+  await c.post('/api/users', { username: 'ron', permissions: 'read', password: 'ron-password-1' });
+  const gina = srv.client();
+  await gina.login('gina', 'gina-password-1');
+  const ron = srv.client();
+  await ron.login('ron', 'ron-password-1');
+
+  const refused = await c.post('/api/me/demote');
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error, /administrator cannot give up full access/);
+  assert.equal((await c.get('/api/me')).body.admin, true);
+  assert.equal((await ron.post('/api/me/demote')).status, 400, 'nothing to give up');
+
+  const r = await gina.post('/api/me/demote');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { username: 'gina', permissions: 'read', admin: false, locked: false, system: false, viewable: false, instances: null });
+  // Same session, now without the admin parts.
+  assert.equal((await gina.get('/api/me')).body.admin, false);
+  assert.equal((await gina.get('/api/users')).status, 403);
+  assert.equal(srv.readJson('users.json').find((u) => u.username === 'gina').permissions, 'read');
+
+  // The same through PUT on your own account; the answer carries the new record.
+  await c.put('/api/users/gina', { permissions: '*' });
+  assert.equal((await gina.get('/api/me')).body.admin, true);
+  const put = await gina.put('/api/users/gina', { permissions: 'read' });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.user.permissions, 'read');
+  assert.equal(put.body.user.admin, false);
+  assert.equal((await gina.get('/api/me')).status, 200);
+  assert.equal((await gina.get('/api/me')).body.admin, false);
+
+  // The last admin can't step down either way.
+  await c.put('/api/users/gina', { permissions: '*' });
+  srv.writeJson('users.json', srv.readJson('users.json').filter((u) => u.username !== ADMIN));
+  const last = await gina.post('/api/me/demote');
+  assert.equal(last.status, 400);
+  assert.match(last.body.error, /at least one admin/);
+  assert.equal((await gina.put('/api/users/gina', { permissions: 'read' })).status, 400);
+});
+
+test('the dashboard-managed backup account: shown as system, access locked, deletable', async () => {
+  const srv = await start({
+    users: [
+      { username: ADMIN, permissions: '*', password: bcrypt.hashSync(ADMIN_PW, 10) },
+      { username: BACKUP_USER, permissions: 'read', system: true, password: bcrypt.hashSync('whatever-pw-1', 10) },
+    ],
+  });
+  const c = await adminClient(srv);
+  const shown = (await c.get('/api/users')).body.find((u) => u.username === BACKUP_USER);
+  assert.deepEqual(shown, { username: BACKUP_USER, permissions: 'read', admin: false, locked: false, system: true, viewable: false, instances: null });
+  for (const body of [{ permissions: '*' }, { instances: { 1890: 'read' } }, { instances: {} }, { permissions: '*', instances: null }]) {
+    const r = await c.put(`/api/users/${BACKUP_USER}`, body);
+    assert.equal(r.status, 400, JSON.stringify(body));
+    assert.match(r.body.error, /managed by the dashboard/);
+  }
+  const stored = () => srv.readJson('users.json').find((u) => u.username === BACKUP_USER);
+  assert.equal(stored().permissions, 'read');
+  assert.equal(stored().instances, undefined);
+  // No-ops and a password reset are fine (the next backup heals the password).
+  assert.equal((await c.put(`/api/users/${BACKUP_USER}`, { permissions: 'read', instances: null })).status, 200);
+  assert.equal((await c.put(`/api/users/${BACKUP_USER}`, { generate: true })).status, 200);
+  assert.equal(stored().system, true);
+  assert.equal((await c.del(`/api/users/${BACKUP_USER}`)).status, 200);
+  assert.equal(stored(), undefined);
 });

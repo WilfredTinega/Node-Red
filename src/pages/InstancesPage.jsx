@@ -146,6 +146,11 @@ function InstanceRow({ instance: i, host, admin, canManage, busy, onConfirm, onD
   const kind = kindOf(i);
   const address = i.port ? `${i.host || (i.localOnly ? '127.0.0.1' : host)}:${i.port}` : null;
   const needsConnect = kind !== 'remote' && (i.login !== 'required' || i.sharedLogins === false);
+  // The container shares the accounts file but doesn't know its own key, so
+  // per-instance rules can't apply to it. Connect shows what to set.
+  const keyWhy = i.keyMismatch
+    ? `NODERED_INSTANCE is ${i.instanceEnv ?? 'not set'}; this instance's key is ${i.port ?? i.key ?? 'its port'}. Per-instance access rules will not work until it is set.`
+    : null;
 
   return (
     <tr>
@@ -154,6 +159,16 @@ function InstanceRow({ instance: i, host, admin, canManage, busy, onConfirm, onD
         <span className="tag" title={kind === 'package' ? 'Installed with npm, not in Docker' : kind === 'remote' ? 'On another machine' : undefined}>
           {kind}
         </span>
+        {keyWhy &&
+          (admin ? (
+            <button type="button" className="tag warn" title={keyWhy} onClick={() => onDialog('connect')}>
+              instance key
+            </button>
+          ) : (
+            <span className="tag warn" title={keyWhy}>
+              instance key
+            </span>
+          ))}
       </td>
       <td className="nowrap">
         {address && i.localOnly ? (
@@ -228,6 +243,19 @@ function ConnectDialog({ instance, authHostDir, onClose }) {
     <Dialog title={`Connect ${instance.name} to the shared accounts`} onClose={onClose} wide>
       <p>After this, logins on this instance use the accounts and access set on the Users page.</p>
 
+      <p className="before-title">Before you switch</p>
+      <ol className="steps before-steps">
+        <li>
+          Change the <code>administrator</code> password and add everyone who needs access on the Users page first.
+        </li>
+        <li>
+          Back up the instance&apos;s current <code>settings.js</code>.
+        </li>
+        <li>
+          Keep the same <code>/data</code> (or <code>~/.node-red</code>) when recreating the container.
+        </li>
+      </ol>
+
       <div className="segmented" role="group" aria-label="Install type">
         {[
           ['docker', 'Docker'],
@@ -248,8 +276,9 @@ function ConnectDialog({ instance, authHostDir, onClose }) {
       {tab === 'docker' ? (
         <ol className="steps">
           <li>
-            Recreate the container with these options added (in compose: under <code>volumes</code> and <code>environment</code>):
-            <CodeBlock>{`-v ${authHostDir}:/auth\n-e NODERED_INSTANCE=${port}`}</CodeBlock>
+            Recreate the container with these options added (in compose: under <code>volumes</code> and <code>environment</code>). The accounts folder is
+            mounted read-only:
+            <CodeBlock>{`-v ${authHostDir}:/auth:ro\n-e NODERED_INSTANCE=${port}`}</CodeBlock>
           </li>
           <li>
             In <code>/data/settings.js</code>, replace any existing <code>adminAuth</code> block with:

@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS = {
   schedule: { mode: 'daily', time: '00:00', everyHours: 6, weekday: 0 },
   loginUser: '',
   loginSecret: null,
+  systemLoginSecret: null,
   history: [],
 };
 
@@ -148,7 +149,10 @@ async function baseCommit(token, repo, defaultBranch) {
   }
 }
 
-export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, defaultCredentials }) {
+// systemLogin: { username, ensure(storedSecret) -> { password, secret } } is the
+// dashboard-managed read-only account used when no login is set here. Its
+// encrypted password lives in this file only (systemLoginSecret), never on the user.
+export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, systemLogin }) {
   let running = false;
   let nextRunAt = null;
 
@@ -175,7 +179,12 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
     if (settings.loginUser && settings.loginSecret) {
       return { username: settings.loginUser, password: decrypt(settings.loginSecret) };
     }
-    return defaultCredentials();
+    const { password, secret } = systemLogin.ensure(settings.systemLoginSecret || null);
+    if (secret !== settings.systemLoginSecret) {
+      settings.systemLoginSecret = secret;
+      save(settings);
+    }
+    return { username: systemLogin.username, password };
   }
 
   // What the page shows: never the token or the login password.
@@ -188,7 +197,7 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
       schedule: s.schedule,
       loginUser: s.loginUser,
       loginSet: Boolean(s.loginSecret),
-      defaultLoginUser: defaultCredentials()?.username || null,
+      defaultLoginUser: systemLogin.username,
       canStoreSecrets: hasKey(),
       running,
       nextRunAt: nextRunAt && nextRunAt.toISOString(),
@@ -234,7 +243,19 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
       const online = instances.filter((i) => i.status === 'online' && i.port);
       if (online.length === 0) throw new Error('No online Node-RED instances to back up.');
 
-      const credentials = online.some((i) => i.login === 'required') ? credentialsFor(s) : null;
+      // The login only goes to instances known to use the shared accounts:
+      // containers mounting /auth, or instances.json entries saying so. Anything
+      // else that asks for a login (including every other machine) gets none.
+      const shared = (i) => i.sharedLogins === true;
+      let credentials = null;
+      let credentialsError = null;
+      if (online.some((i) => i.login === 'required' && shared(i))) {
+        try {
+          credentials = credentialsFor(s);
+        } catch (e) {
+          credentialsError = e.message;
+        }
+      }
       const files = [];
       const used = new Set();
       for (const i of online) {
@@ -243,6 +264,8 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
         used.add(folder);
         const result = { name: i.name, port: i.port, folder, ok: false };
         try {
+          if (i.login === 'required' && !shared(i)) throw new Error('not using the shared accounts, no login sent');
+          if (i.login === 'required' && credentialsError) throw new Error(credentialsError);
           const { flows, rev } = await fetchFlows(`http://${i.host || probeHost}:${i.port}`, i.login, credentials);
           files.push({ path: `${folder}/flows.json`, content: JSON.stringify(flows, null, 2) + '\n' });
           Object.assign(result, { ok: true, nodes: flows.length, rev });

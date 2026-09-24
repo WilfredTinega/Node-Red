@@ -13,7 +13,11 @@ if (!target || !ref || !process.env.DOCKER_API) {
 // Give the dashboard a moment to answer the browser before it goes down.
 await new Promise((r) => setTimeout(r, 2000));
 try {
-  const id = await createDocker(process.env.DOCKER_API).recreate(target, ref, (m) => console.log(m));
+  const docker = createDocker(process.env.DOCKER_API);
+  // Only ever the dashboard's own container, never a Node-RED one.
+  const role = (await docker.inspect(target)).Config?.Labels?.['nodered-admin.role'];
+  if (role !== 'dashboard') throw new Error(`refusing to update ${target}: it is not labelled nodered-admin.role=dashboard`);
+  const id = await docker.recreate(target, ref, (m) => console.log(m));
   console.log(`Dashboard now runs ${ref} (${id.slice(0, 12)})`);
 } catch (e) {
   console.error(e.message);

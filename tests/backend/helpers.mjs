@@ -1,6 +1,7 @@
 // Shared helpers for the backend tests: temp dirs, mock HTTP servers, and a
 // running copy of server.js with every file and API pointed at the test's own.
 import { spawn } from 'node:child_process';
+import bcrypt from 'bcryptjs';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -67,7 +68,8 @@ export async function mockServer(handler, { host = '127.0.0.1', port = 0 } = {})
 }
 
 // A fake Node-RED: "/" is the editor page, /auth/login says how it logs in.
-// opts: { login: 'credentials' | 'open', version, flows, users: {name: password}, flowsStatus }
+// opts: { login: 'credentials' | 'open', version, flows, users, flowsStatus }
+// users: {name: password}, or (name, password) => boolean for passwords only known at request time.
 export function fakeNodeRed(opts = {}, listen = {}) {
   const tokens = new Set();
   const nr = { revoked: [], tokenRequests: [] };
@@ -82,8 +84,11 @@ export function fakeNodeRed(opts = {}, listen = {}) {
     if (r.method === 'POST' && r.path === '/auth/token') {
       const form = new URLSearchParams(r.raw);
       nr.tokenRequests.push(Object.fromEntries(form));
-      const want = opts.users?.[form.get('username')];
-      if (!want || want !== form.get('password')) return { status: 401, json: { error: 'unauthorized' } };
+      const ok =
+        typeof opts.users === 'function'
+          ? opts.users(form.get('username'), form.get('password'))
+          : Boolean(opts.users?.[form.get('username')]) && opts.users[form.get('username')] === form.get('password');
+      if (!ok) return { status: 401, json: { error: 'unauthorized' } };
       const t = `tok-${Math.random().toString(36).slice(2)}`;
       tokens.add(t);
       return { json: { access_token: t, expires_in: 604800, token_type: 'Bearer' } };
@@ -134,12 +139,15 @@ export async function startServer({ dir = tempDir('srv'), env = {}, users } = {}
     BACKUP_FILE: path.join(dir, 'backup.json'),
     GITHUB_FILE: path.join(dir, 'github.json'),
     DASHBOARD_UPDATE_FILE: path.join(dir, 'dashboard-update.json'),
+    SETTINGS_FILE: path.join(dir, 'settings.json'),
+    INITIAL_PASSWORD_FILE: path.join(dir, 'initial-admin-password'),
     INSTANCES_FILE: path.join(dir, 'instances.json'),
     PROBE_HOST: '127.0.0.1',
     SCAN_HOST_PORTS: '0',
     DOCKER_API: '',
     // Never the real GitHub: an unused local port unless a test gives a mock.
     GITHUB_API: 'http://127.0.0.1:9',
+    // Explicit, because unset means a random password written to INITIAL_PASSWORD_FILE.
     DEFAULT_ADMIN_PASSWORD: 'default-admin-pw',
     ...env,
   };
@@ -218,3 +226,14 @@ export function client(base) {
 
 export const ADMIN = 'administrator';
 export const ADMIN_PW = 'default-admin-pw';
+export const BACKUP_USER = 'nodered-backup';
+
+// A fake Node-RED `users` check that accepts the dashboard-managed backup
+// account with whatever password its hash in the server's users.json says.
+export function acceptsBackupAccount(getSrv) {
+  return (username, password) => {
+    if (username !== BACKUP_USER) return false;
+    const u = JSON.parse(fs.readFileSync(getSrv().env.USERS_FILE, 'utf8')).find((x) => x.username === BACKUP_USER);
+    return Boolean(u && bcrypt.compareSync(password, u.password));
+  };
+}

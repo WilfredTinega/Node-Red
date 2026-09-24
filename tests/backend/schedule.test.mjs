@@ -3,6 +3,7 @@ process.env.TZ = 'Africa/Nairobi';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { nextRun, validateSettings, DEFAULT_SETTINGS } from '../../backup.js';
+import { REPO_RE, normalizeRepo } from '../../github.js';
 
 // Local time, like the server's TZ. 2026-09-24 is a Thursday.
 const at = (y, mo, d, h = 0, mi = 0, s = 0, ms = 0) => new Date(y, mo - 1, d, h, mi, s, ms);
@@ -84,6 +85,11 @@ test('validateSettings', () => {
   const bad = [
     { repo: 'nope' },
     { repo: 'a/b/c' },
+    { repo: '../..' },
+    { repo: './x' },
+    { repo: 'x/.' },
+    { repo: 'x/..' },
+    { repo: 'https://github.com/../..' },
     { branchPrefix: '../x' },
     { branchPrefix: '/x' },
     { branchPrefix: 'a//b' },
@@ -96,6 +102,13 @@ test('validateSettings', () => {
     { schedule: { weekday: 'x' } },
   ];
   for (const input of bad) assert.throws(() => validateSettings(input, cur), undefined, JSON.stringify(input));
+});
+
+test('REPO_RE: owner/name only, and never a segment made of dots (an API path walk)', () => {
+  for (const ok of ['octo/repo', 'my.org/my-repo', 'a_b/c.d', '.github/x', 'x/.hidden', 'a..b/c']) assert.ok(REPO_RE.test(ok), ok);
+  for (const bad of ['../..', '..', '.', '../x', './x', 'x/.', 'x/..', 'x/...', '.../x', 'a/b/c', '/x', 'x/', 'a b/c']) assert.ok(!REPO_RE.test(bad), bad);
+  assert.equal(normalizeRepo(' https://github.com/Octo/Repo.git '), 'Octo/Repo');
+  assert.ok(!REPO_RE.test(normalizeRepo('https://github.com/../../user')), 'walking out of /repos is refused');
 });
 
 test('the scheduler runs once per slot, and once after a long sleep', async (t) => {
@@ -117,8 +130,14 @@ test('the scheduler runs once per slot, and once after a long sleep', async (t) 
     isConnected: () => true,
     listInstances: async () => ({ instances: [], errors: [] }),
     probeHost: '127.0.0.1',
-    defaultCredentials: () => null,
+    systemLogin: {
+      username: 'nodered-backup',
+      ensure: () => {
+        throw new Error('no instances in this test, so never asked');
+      },
+    },
   });
+  assert.equal(b.publicState().defaultLoginUser, 'nodered-backup');
   b.start();
   same(new Date(b.publicState().nextRunAt), at(2026, 9, 24, 11));
   t.mock.timers.tick(20000); // 11:00:10

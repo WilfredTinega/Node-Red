@@ -182,6 +182,26 @@ test('findByRole and runHelper', async () => {
   const create = d.find('POST', '/containers/create')[0].body;
   assert.deepEqual(create, { Image: 'img:1', Cmd: ['node', 'x.js'], Env: ['A=1'], Labels: { 'nodered-admin.role': 'updater' }, HostConfig: { NetworkMode: 'host', AutoRemove: true } });
   assert.equal(d.calls().at(-1), `POST /containers/${id}/start`);
+
+  d.clear();
+  await docker.runHelper('img:1', ['node', 'x.js'], ['A=1'], 'farm_default');
+  assert.equal(d.find('POST', '/containers/create')[0].body.HostConfig.NetworkMode, 'farm_default');
+});
+
+test('recreate: a failed rename after the stop starts the old container again', async () => {
+  d.clear();
+  const oldId = id64('aaaa1111');
+  d.state.renameFails = true;
+  try {
+    await assert.rejects(docker.recreate(oldId, 'nodered/node-red:latest'), /Update failed and nodered-a was restored: .*rename failed/);
+  } finally {
+    d.state.renameFails = false;
+  }
+  const calls = d.calls();
+  assert.ok(calls.includes(`POST /containers/${oldId}/stop`));
+  assert.equal(calls.at(-1), `POST /containers/${oldId}/start`, 'started again after the failed rename');
+  assert.equal(d.find('POST', '/containers/create').length, 0, 'nothing new was created');
+  assert.equal(d.state.containers[oldId].Name, '/nodered-a');
 });
 
 test('self-update.js: usage error, then a full swap against the mock', async () => {
@@ -191,6 +211,9 @@ test('self-update.js: usage error, then a full swap against the mock', async () 
 
   d.clear();
   const oldId = id64('aaaa1111');
+  // self-update.js only swaps a container labelled as the dashboard.
+  const target = d.state.containers[oldId];
+  target.Config = { ...target.Config, Labels: { ...target.Config.Labels, 'nodered-admin.role': 'dashboard' } };
   const { spawn } = await import('node:child_process');
   const child = spawn(process.execPath, [path.join(ROOT, 'self-update.js'), oldId, 'ghcr.io/octo/dash:new'], { env: { PATH: process.env.PATH, DOCKER_API: d.url } });
   let out = '';
