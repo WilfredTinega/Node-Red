@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackups } from './backup.js';
 import { createDocker, registryAuth } from './docker.js';
+import { callHostAgent, hostAgentEnabled } from './host-agent-client.js';
 import { createGithubAccount, github } from './github.js';
 
 const USERS_FILE = process.env.USERS_FILE || '/auth/users.json';
@@ -760,7 +761,14 @@ const instanceKey = (i) => (i.host ? `${i.host}:${i.port}` : i.port ? String(i.p
 app.get('/api/instances', requireAuth, async (req, res) => {
   const { instances, errors } = await listInstances();
   res.set('Cache-Control', 'no-store');
-  res.json({ publicHost: PUBLIC_HOST, authHostDir: AUTH_HOST_DIR, canManageContainers: Boolean(docker), instances, errors });
+  res.json({
+    publicHost: PUBLIC_HOST,
+    authHostDir: AUTH_HOST_DIR,
+    canManageContainers: Boolean(docker),
+    canManageHost: hostAgentEnabled(),
+    instances,
+    errors,
+  });
 });
 
 // ---------- restart / update containers ----------
@@ -803,6 +811,44 @@ app.post('/api/instances/:id/restart', requireAuth, requireAdmin, (req, res) =>
 app.post('/api/instances/:id/update', requireAuth, requireAdmin, (req, res) =>
   containerAction(req, res, (inst) => docker.update(inst.container)),
 );
+
+// Connect a Docker container to the shared accounts (edit its settings.js + recreate).
+app.post('/api/instances/:id/connect', requireAuth, requireAdmin, (req, res) =>
+  containerAction(req, res, (inst) => docker.connect(inst.container, { authDir: AUTH_HOST_DIR, hostPort: inst.port })),
+);
+
+// ---------- host-installed instances (via the root host agent) ----------
+
+const busyHosts = new Set();
+
+// Only act on a port discovery reports as a host-installed (source 'host') Node-RED.
+async function hostInstance(port) {
+  if (!hostAgentEnabled()) throw new HttpError(400, 'The host agent is not installed, so host instances cannot be managed from here.');
+  const { instances } = await listInstances();
+  const inst = instances.find((i) => i.source === 'host' && !i.host && String(i.port) === String(port));
+  if (!inst) throw new HttpError(404, 'That port is not a host-installed Node-RED instance on this server.');
+  if (busyHosts.has(String(port))) throw new HttpError(409, `${inst.name} is already being worked on.`);
+  busyHosts.add(String(port));
+  return inst;
+}
+
+async function hostAction(req, res, action, params) {
+  const inst = await hostInstance(req.params.port);
+  scanCache.at = 0;
+  try {
+    const result = await callHostAgent(action, { port: inst.port, ...params });
+    console.log(`[host] ${req.user.username}: ${action} ${inst.name} (:${inst.port}): ${result.ok ? 'ok' : 'FAILED'} ${result.message || ''}`);
+    if (!result.ok) throw new HttpError(500, result.message || `${action} failed.`, { steps: result.steps || [] });
+    res.json({ ok: true, ...result });
+  } finally {
+    busyHosts.delete(String(inst.port));
+    scanCache.at = 0;
+  }
+}
+
+app.post('/api/hosts/:port/restart', requireAuth, requireAdmin, (req, res) => hostAction(req, res, 'restart'));
+app.post('/api/hosts/:port/update', requireAuth, requireAdmin, (req, res) => hostAction(req, res, 'update'));
+app.post('/api/hosts/:port/connect', requireAuth, requireAdmin, (req, res) => hostAction(req, res, 'connect', { authDir: AUTH_HOST_DIR }));
 
 // ---------- GitHub account ----------
 
@@ -955,6 +1001,7 @@ const backups = createBackups({
   isConnected: () => githubAccount.publicState().connected,
   listInstances,
   probeHost: PROBE_HOST,
+  publicHost: PUBLIC_HOST,
   systemLogin: { username: BACKUP_USER, ensure: ensureBackupAccount },
 });
 

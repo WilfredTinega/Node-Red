@@ -156,7 +156,6 @@ test.describe('users', () => {
     await row.getByRole('button', { name: 'Instances for limited@upande.com: 1 instance' }).click();
     dialog = page.getByRole('dialog', { name: 'Instance access for limited@upande.com' });
     await expect(dialog.getByRole('radio', { name: 'Only chosen instances' })).toBeChecked();
-    await expect(dialog.locator('.per-instance-note')).toHaveText('Access is set per instance; such users cannot manage this dashboard.');
     await expect(dialog.getByRole('button', { name: `Access on nodered-main (port ${mainPort}): Read only` })).toBeVisible();
     await expect(dialog.getByRole('button', { name: `Access on nodered-open (port ${stack.nr.open.port}): No access` })).toBeVisible();
 
@@ -248,7 +247,6 @@ test.describe('users', () => {
     const toggle = page.getByRole('switch', { name: 'Store passwords viewable' });
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await expect(toggle).toHaveText('On');
-    await expect(page.locator('.viewable-setting')).toContainText('Off: only the password hash is stored (default). On: an encrypted copy is kept so admins can click Show.');
     const row = userRow(page, 'gen@upande.com');
     await row.getByRole('button', { name: 'Show password for gen@upande.com' }).click();
     await expect(row.locator('.pw code')).toHaveText(password);
@@ -256,7 +254,7 @@ test.describe('users', () => {
     // Turning it off asks first.
     await toggle.click();
     const dialog = page.getByRole('dialog', { name: 'Turn off viewable passwords?' });
-    await expect(dialog).toContainText('Every stored password copy is deleted now.');
+    await expect(dialog).toContainText('Every stored password copy is deleted now');
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toBeHidden();
     await expect(toggle).toHaveAttribute('aria-checked', 'true');

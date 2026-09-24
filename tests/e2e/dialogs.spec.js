@@ -32,9 +32,9 @@ test.describe('dialog focus', () => {
 
   test('a plain dialog: the first control is focused, Shift+Tab wraps to the last, the backdrop closes it', async ({ page, stack }) => {
     await loginAs(page, 'instances');
-    const opener = page.locator('.instances-table tbody tr', { hasText: 'nodered-open' }).getByRole('button', { name: 'Connect' });
+    const opener = page.locator('.instances-table tbody tr', { hasText: 'Package NR' }).getByRole('button', { name: 'Connect' });
     await opener.click();
-    const dialog = page.getByRole('dialog', { name: /^Connect nodered-open/ });
+    const dialog = page.getByRole('dialog', { name: /^Connect Package NR/ });
     await expect(dialog.getByRole('button', { name: 'Docker' })).toBeFocused();
     await page.keyboard.press('Shift+Tab');
     await expect(dialog.getByRole('button', { name: 'Done' })).toBeFocused();

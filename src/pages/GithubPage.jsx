@@ -14,7 +14,7 @@ export default function GithubPage({ onAuthError }) {
   const state = gh.data;
   return (
     <>
-      <PageHeader title="GitHub" subtitle="One account for flow backups and dashboard updates." />
+      <PageHeader title="GitHub" />
       {!state && (gh.error ? <Notice kind="error">{gh.error}</Notice> : <p className="muted">Loading…</p>)}
       {state && (
         <>
@@ -89,10 +89,7 @@ function AccountCard({ state, setState, onAuthError }) {
               disconnect.setError('');
             }}
           >
-            <p>
-              Scheduled backups and dashboard updates stop until a GitHub account is connected again. The token is deleted from this server; revoke it on
-              GitHub too if it is no longer needed.
-            </p>
+            <p>Scheduled backups and dashboard updates stop until a GitHub account is connected again.</p>
           </ConfirmDialog>
         )}
       </Card>
@@ -116,19 +113,8 @@ function AccountCard({ state, setState, onAuthError }) {
           />
         </label>
         <div className="gh-scopes">
-          <p>
-            Create a <strong>classic</strong> personal access token with these scopes:
-          </p>
-          <ul>
-            <li>
-              <code>repo</code>: write backups to the private backup repository, read the dashboard repository and its Actions runs
-            </li>
-            <li>
-              <code>read:packages</code>: pull the dashboard image from ghcr.io
-            </li>
-          </ul>
           <a href={TOKEN_URL} target="_blank" rel="noreferrer">
-            Create a token on GitHub
+            Create a token
           </a>
         </div>
         <ErrorText>{connect.error}</ErrorText>
@@ -244,8 +230,7 @@ function DashboardCard({ state, setState, onAuthError, onUpdating }) {
         >
           <p>
             Updates from <code>{shortSha(d.revision)}</code> to <code>{shortSha(d.latestBuild.sha)}</code>
-            {d.latestBuild.message && <> ({d.latestBuild.message})</>}. The dashboard restarts and is unavailable for a few seconds. If the new
-            version does not start, the old one is put back.
+            {d.latestBuild.message && <> ({d.latestBuild.message})</>}. The dashboard restarts and is unavailable for a few seconds.
           </p>
         </ConfirmDialog>
       )}
@@ -393,7 +378,7 @@ function Updating({ message }) {
     <Card className="gh-card gh-updating">
       <div className="gh-spinner" aria-hidden="true" />
       <h2 role="status">Updating… the dashboard will restart</h2>
-      <p className="muted">{message} This page reloads by itself.</p>
+      <p className="muted">{message}</p>
     </Card>
   );
 }

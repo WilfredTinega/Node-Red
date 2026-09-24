@@ -152,7 +152,7 @@ async function baseCommit(token, repo, defaultBranch) {
 // systemLogin: { username, ensure(storedSecret) -> { password, secret } } is the
 // dashboard-managed read-only account used when no login is set here. Its
 // encrypted password lives in this file only (systemLoginSecret), never on the user.
-export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, systemLogin }) {
+export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConnected, listInstances, probeHost, publicHost, systemLogin }) {
   let running = false;
   let nextRunAt = null;
 
@@ -243,13 +243,15 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
       const online = instances.filter((i) => i.status === 'online' && i.port);
       if (online.length === 0) throw new Error('No online Node-RED instances to back up.');
 
-      // The login only goes to instances known to use the shared accounts:
-      // containers mounting /auth, or instances.json entries saying so. Anything
-      // else that asks for a login (including every other machine) gets none.
-      const shared = (i) => i.sharedLogins === true;
+      // Back up every online instance. Any that needs a login is logged into
+      // with the read-only backup account (or the admin's override login), so
+      // instances that use the shared accounts, or accept that login, are all
+      // covered. An instance that refuses the login is reported, not skipped.
+      // The credential is the read-only `nodered-backup` account, never the
+      // administrator, so a login sent to an instance is low-value.
       let credentials = null;
       let credentialsError = null;
-      if (online.some((i) => i.login === 'required' && shared(i))) {
+      if (online.some((i) => i.login === 'required')) {
         try {
           credentials = credentialsFor(s);
         } catch (e) {
@@ -259,12 +261,15 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
       const files = [];
       const used = new Set();
       for (const i of online) {
-        let folder = slug(`${i.name}-${i.port}`);
+        // The folder carries the instance's IP/address and port; the datetime
+        // is the branch name and the commit. So the branch holds flows only.
+        const host = i.host || publicHost || probeHost;
+        const address = `${host}:${i.port}`;
+        let folder = slug(`${i.name}_${host}-${i.port}`);
         while (used.has(folder)) folder += '-x';
         used.add(folder);
-        const result = { name: i.name, port: i.port, folder, ok: false };
+        const result = { name: i.name, port: i.port, address, folder, ok: false };
         try {
-          if (i.login === 'required' && !shared(i)) throw new Error('not using the shared accounts, no login sent');
           if (i.login === 'required' && credentialsError) throw new Error(credentialsError);
           const { flows, rev } = await fetchFlows(`http://${i.host || probeHost}:${i.port}`, i.login, credentials);
           files.push({ path: `${folder}/flows.json`, content: JSON.stringify(flows, null, 2) + '\n' });
@@ -280,26 +285,16 @@ export function createBackups({ file, encrypt, decrypt, hasKey, getToken, isConn
         throw new Error(`Could not read flows from any instance: ${entry.instances.map((i) => `${i.name}: ${i.error}`).join('; ')}`);
       }
 
-      files.push({
-        path: 'backup-info.json',
-        content:
-          JSON.stringify(
-            { backedUpAt: startedAt.toISOString(), localTime: `${localDate(startedAt)} ${localTime(startedAt)}`, trigger, instances: entry.instances },
-            null,
-            2,
-          ) + '\n',
-      });
-
       const parent = await baseCommit(token, s.repo, defaultBranch);
-      const parentCommit = await github(token, 'GET', `/repos/${s.repo}/git/commits/${parent}`);
+      // No base_tree: the branch's tree is exactly these flow files, so nothing
+      // from the default branch (its README, an earlier run's files) is carried in.
       const tree = await github(token, 'POST', `/repos/${s.repo}/git/trees`, {
-        base_tree: parentCommit.tree.sha,
         tree: files.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.content })),
       });
       const failed = entry.instances.length - saved.length;
       const message =
         `Node-RED backup ${localDate(startedAt)} ${localTime(startedAt)}\n\n` +
-        entry.instances.map((i) => `- ${i.name} (:${i.port}): ${i.ok ? `${i.nodes} nodes` : `FAILED, ${i.error}`}`).join('\n');
+        entry.instances.map((i) => `- ${i.name} (${i.address}): ${i.ok ? `${i.nodes} nodes` : `FAILED, ${i.error}`}`).join('\n');
       const commit = await github(token, 'POST', `/repos/${s.repo}/git/commits`, { message, tree: tree.sha, parents: [parent] });
 
       // Two runs in the same second (a manual one right after the schedule)

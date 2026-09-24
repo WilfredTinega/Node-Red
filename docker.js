@@ -108,8 +108,12 @@ export function createDocker(api) {
   }
 
   // Replaces a container with one running `ref`, keeping everything else.
-  // Rolls back to the old container if the new one won't start.
-  async function recreate(id, ref, log = () => {}) {
+  // Rolls back to the old container if the new one won't start. `opts` may add
+  // mounts (addBinds) and env (addEnv) — used by connect. A function in `opts`
+  // is treated as the log callback (back-compat with recreate(id, ref, log)).
+  async function recreate(id, ref, opts = {}) {
+    if (typeof opts === 'function') opts = { log: opts };
+    const { addBinds = [], addEnv = [], log = () => {} } = opts;
     const old = await inspect(id);
     const name = old.Name.replace(/^\//, '');
     // Stopping an --rm container deletes it and its anonymous volumes (its /data).
@@ -117,6 +121,9 @@ export function createDocker(api) {
     const oldImage = await call('GET', `/images/${old.Image}/json`).catch(() => ({ Config: {} }));
     const config = withoutImageDefaults(old.Config, oldImage.Config || {});
     config.Image = ref;
+    // Add env that isn't already set (by name), and remember it for the bind step.
+    const envNames = new Set((config.Env || []).map((e) => e.split('=')[0]));
+    config.Env = [...(config.Env || []), ...addEnv.filter((e) => !envNames.has(e.split('=')[0]))];
     if (config.Hostname === old.Id.slice(0, 12)) delete config.Hostname;
 
     // Anonymous volumes aren't in Binds; carry them over by name, or the new
@@ -139,6 +146,11 @@ export function createDocker(api) {
       if (m.Type === 'volume' && !mounted.has(m.Destination) && !binds.some((b) => b.split(':')[1] === m.Destination)) {
         binds.push(`${m.Name}:${m.Destination}${m.RW ? '' : ':ro'}`);
       }
+    }
+    // Add new binds (e.g. the /auth mount) if that target isn't already mounted.
+    for (const b of addBinds) {
+      const target = b.split(':')[1];
+      if (!binds.some((x) => x.split(':')[1] === target) && !mounted.has(target)) binds.push(b);
     }
     hostConfig.Binds = binds;
 
@@ -207,5 +219,42 @@ export function createDocker(api) {
     return helper.Id;
   }
 
-  return { restart, update, pull, recreate, findByRole, runHelper, inspect };
+  // Run a command in a running container and return { code, output }.
+  async function exec(id, cmd) {
+    const created = await call('POST', `/containers/${id}/exec`, { AttachStdout: true, AttachStderr: true, Cmd: cmd });
+    const out = await call('POST', `/exec/${created.Id}/start`, { Detach: false, Tty: true }, 60000);
+    const info = await call('GET', `/exec/${created.Id}/json`);
+    return { code: info.ExitCode ?? 0, output: typeof out === 'string' ? out : '' };
+  }
+
+  // Connect a container to the shared accounts: make its /data/settings.js load
+  // the shared adminAuth (backed up first, idempotent), then recreate it with
+  // the /auth mount and NODERED_INSTANCE so the change takes effect. Flows in
+  // /data are untouched.
+  async function connect(id, { authDir, hostPort, log = () => {} }) {
+    const old = await inspect(id);
+    const dataMount = (old.Mounts || []).some((m) => m.Destination === '/data');
+    if (!dataMount) throw new Error('the container has no /data mount, so its settings cannot be edited safely');
+    const block =
+      `\\n// >>> nodered-user-admin: shared accounts (managed by the dashboard; do not edit)\\n` +
+      `process.env.NODERED_INSTANCE = process.env.NODERED_INSTANCE || '${hostPort}';\\n` +
+      `module.exports.adminAuth = require('/auth/adminAuth.js');\\n` +
+      `// <<< nodered-user-admin\\n`;
+    // Idempotent: skip if the block is already there; back up before appending.
+    const script =
+      `f=/data/settings.js; [ -f "$f" ] || { echo "no settings.js"; exit 1; }; ` +
+      `grep -q "nodered-user-admin: shared accounts" "$f" || { cp "$f" "$f.bak-$(date +%Y%m%d-%H%M%S)"; printf '${block}' >> "$f"; }`;
+    log('Editing settings.js…');
+    const r = await exec(id, ['sh', '-c', script]);
+    if (r.code !== 0) throw new Error(`could not edit settings.js: ${r.output.trim() || `exit ${r.code}`}`);
+    log('Recreating the container with the shared accounts mounted…');
+    const newId = await recreate(id, old.Config.Image, {
+      addBinds: [`${authDir}:/auth:ro`],
+      addEnv: [`NODERED_INSTANCE=${hostPort}`],
+      log,
+    });
+    return { updated: true, message: 'Connected to the shared accounts and restarted.', container: newId };
+  }
+
+  return { restart, update, pull, recreate, connect, exec, findByRole, runHelper, inspect };
 }

@@ -33,7 +33,7 @@ for (const scheme of ['light', 'dark']) {
     await page.goto('/');
     await expect(page.getByRole('button', { name: 'Log in' })).toBeVisible();
     await page.getByLabel('Username').fill('administrator');
-    await page.getByLabel('Password').fill('wrong');
+    await page.getByLabel('Password', { exact: true }).fill('wrong');
     await page.getByRole('button', { name: 'Log in' }).click();
     await expect(page.locator('form .error')).toBeVisible();
     await shot('login');

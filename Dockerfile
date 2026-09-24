@@ -15,7 +15,7 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
-COPY server.js backup.js github.js docker.js self-update.js reset-admin.js ./
+COPY server.js backup.js github.js docker.js self-update.js reset-admin.js host-agent-client.js ./
 COPY nodered ./nodered
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh

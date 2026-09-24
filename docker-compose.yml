@@ -23,6 +23,9 @@ services:
       # Optional instances.json: names for ports, and Node-RED on other machines.
       - /opt/nodered-user-admin-config:/config:ro
       - /proc/1/net:/hostnet:ro
+      # The host agent's socket (host-agent/install.sh) for host-install actions.
+      # Only needed if you installed the agent; comment out otherwise.
+      - /run/nodered-admin:/run/nodered-admin
     environment:
       PORT: "1881"
       TZ: Africa/Nairobi # backup times are in this timezone
@@ -30,6 +33,7 @@ services:
       DOCKER_API: http://docker-proxy:2375
       PROBE_HOST: host.docker.internal
       HOST_NET_DIR: /hostnet
+      HOST_AGENT_SOCKET: /run/nodered-admin/agent.sock
       PUBLIC_HOST: "94.237.25.175"
       # Set to "1" once this is served over HTTPS.
       SECURE_COOKIE: "0"

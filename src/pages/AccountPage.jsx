@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.js';
-import { Card, ConfirmDialog, MIN_PASSWORD, Notice, PageHeader, PasswordInput, useAction } from '../ui.jsx';
+import { Card, ConfirmDialog, MIN_PASSWORD, PageHeader, PasswordInput, useAction } from '../ui.jsx';
 
 export default function AccountPage({ me, setMe, onAuthError }) {
   return (
@@ -15,9 +15,8 @@ export default function AccountPage({ me, setMe, onAuthError }) {
           <dt>Instances</dt>
           <dd>{me.instances ? `${Object.keys(me.instances).length} chosen instances` : 'All instances'}</dd>
         </dl>
-        {me.locked && <Notice>This is the built-in administrator account. It always has full access and cannot be deleted.</Notice>}
       </Card>
-      {me.admin && <FullAccessCard me={me} setMe={setMe} onAuthError={onAuthError} />}
+      {me.admin && !me.locked && <FullAccessCard me={me} setMe={setMe} onAuthError={onAuthError} />}
       <ChangePassword onAuthError={onAuthError} />
     </>
   );
@@ -39,30 +38,21 @@ function FullAccessCard({ me, setMe, onAuthError }) {
 
   return (
     <Card title="Full access">
-      {me.locked ? (
-        <p className="muted">This account always keeps full access.</p>
-      ) : (
-        <>
-          <p>You have full access on this dashboard and on every instance.</p>
-          <button
-            type="button"
-            className="ghost danger"
-            onClick={() => {
-              setError('');
-              setAsking(true);
-            }}
-          >
-            Give up full access
-          </button>
-        </>
-      )}
+      <button
+        type="button"
+        className="ghost danger"
+        onClick={() => {
+          setError('');
+          setAsking(true);
+        }}
+      >
+        Give up full access
+      </button>
       {asking && (
         <ConfirmDialog title="Give up full access?" confirmLabel="Give up full access" busyLabel="Saving…" danger onConfirm={confirm} onClose={() => setAsking(false)} error={error} busy={busy}>
           <p>
-            Your account becomes <strong>read only</strong> on this dashboard and on every instance, immediately. You will no longer be able to manage
-            users, backups or GitHub here, or deploy flows.
+            Your account becomes <strong>read only</strong> on this dashboard and on every instance, immediately. Only an admin can restore it.
           </p>
-          <p>Only an admin can give you full access back.</p>
         </ConfirmDialog>
       )}
     </Card>
@@ -97,18 +87,9 @@ function ChangePassword({ onAuthError }) {
   return (
     <Card title="Change password">
       <form className="grid" onSubmit={submit}>
-        <label>
-          Current password
-          <PasswordInput value={current} onChange={(e) => setCurrent(e.target.value)} required />
-        </label>
-        <label>
-          New password
-          <PasswordInput value={next} onChange={(e) => setNext(e.target.value)} minLength={MIN_PASSWORD} autoComplete="new-password" required />
-        </label>
-        <label>
-          Repeat new password
-          <PasswordInput value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" required />
-        </label>
+        <PasswordInput label="Current password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+        <PasswordInput label="New password" value={next} onChange={(e) => setNext(e.target.value)} minLength={MIN_PASSWORD} autoComplete="new-password" required />
+        <PasswordInput label="Repeat new password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" required />
         {message && <p className={message.ok ? 'ok' : 'error'}>{message.text}</p>}
         <div>
           <button disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button>

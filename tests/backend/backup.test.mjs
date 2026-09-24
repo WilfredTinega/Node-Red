@@ -132,13 +132,14 @@ test('first backup to an empty repo: README, tree, commit, dated branch', async 
   assert.ok(new Date(stamp) >= new Date(Math.floor(before / 1000) * 1000) && new Date(stamp) <= after, stamp);
   assert.equal(e.url, `https://github.com/octo/private-empty/tree/${e.branch}`);
 
-  // Per-instance results; the same name twice gets separate folders.
+  // Per-instance results; the folder carries the address (host + port).
+  const fld = (name, port) => `${name}_127.0.0.1-${port}`;
   assert.deepEqual(
-    e.instances.map((i) => [i.name, i.ok, i.folder]),
+    e.instances.map((i) => [i.name, i.ok, i.folder, i.address]),
     [
-      ['Farm A', true, `farm-a-${nrLogin.port}`],
-      ['Farm A', true, `farm-a-${nrOpen.port}`],
-      ['Broken', false, `broken-${nrBroken.port}`],
+      ['Farm A', true, fld('farm-a', nrLogin.port), `127.0.0.1:${nrLogin.port}`],
+      ['Farm A', true, fld('farm-a', nrOpen.port), `127.0.0.1:${nrOpen.port}`],
+      ['Broken', false, fld('broken', nrBroken.port), `127.0.0.1:${nrBroken.port}`],
     ].sort((a, b) => Number(a[2].split('-').at(-1)) - Number(b[2].split('-').at(-1))),
   );
   const login = e.instances.find((i) => i.port === nrLogin.port);
@@ -179,7 +180,6 @@ test('first backup to an empty repo: README, tree, commit, dated branch', async 
     'GET /repos/octo/private-empty',
     'GET /repos/octo/private-empty/git/ref/heads/main',
     'PUT /repos/octo/private-empty/contents/README.md',
-    'GET /repos/octo/private-empty/git/commits/c-readme-1',
     'POST /repos/octo/private-empty/git/trees',
     'POST /repos/octo/private-empty/git/commits',
     'POST /repos/octo/private-empty/git/refs',
@@ -187,12 +187,13 @@ test('first backup to an empty repo: README, tree, commit, dated branch', async 
   const readme = gh.find('PUT', '/repos/octo/private-empty/contents/README.md')[0].body;
   assert.match(Buffer.from(readme.content, 'base64').toString(), /^# Node-RED backups/);
   const tree = gh.find('POST', '/repos/octo/private-empty/git/trees')[0].body;
-  assert.equal(tree.base_tree, 'tree-of-c-readme-1');
-  assert.deepEqual(tree.tree.map((t) => t.path).sort(), [`farm-a-${nrLogin.port}/flows.json`, `farm-a-${nrOpen.port}/flows.json`, 'backup-info.json'].sort());
+  // No base_tree, and only flow files: the branch never carries README or a
+  // metadata file, just each instance's flows under its address folder.
+  assert.equal(tree.base_tree, undefined);
+  assert.deepEqual(tree.tree.map((t) => t.path).sort(), [`farm-a_127.0.0.1-${nrLogin.port}/flows.json`, `farm-a_127.0.0.1-${nrOpen.port}/flows.json`].sort());
   for (const t of tree.tree) assert.deepEqual([t.mode, t.type], ['100644', 'blob']);
-  assert.deepEqual(JSON.parse(tree.tree.find((t) => t.path.startsWith(`farm-a-${nrLogin.port}/`)).content), FLOWS);
-  const info = JSON.parse(tree.tree.find((t) => t.path === 'backup-info.json').content);
-  assert.equal(info.instances.length, 3);
+  assert.deepEqual(JSON.parse(tree.tree.find((t) => t.path.startsWith(`farm-a_127.0.0.1-${nrLogin.port}/`)).content), FLOWS);
+  assert.ok(!tree.tree.some((t) => /backup-info|README/.test(t.path)), 'no metadata files in the branch');
   const commit = gh.find('POST', '/repos/octo/private-empty/git/commits')[0].body;
   assert.deepEqual(commit.parents, ['c-readme-1']);
   assert.match(commit.tree, /^tree-/);
@@ -285,7 +286,7 @@ test('the backup account heals itself: deleted or reset by hand, it gets a new p
   for (const nr of [nrLogin, nrRemote]) assert.ok(nr.tokenRequests.every((t) => t.username !== ADMIN));
 });
 
-test('no login goes to instances outside the shared accounts, nor to other machines unless marked', async () => {
+test('every online instance is backed up; login-required ones use the read-only backup account', async () => {
   srv.writeJson('instances.json', [
     { name: 'Not shared', port: nrLogin.port },
     { name: 'Remote', host: '127.0.0.1', port: nrRemote.port },
@@ -295,35 +296,19 @@ test('no login goes to instances outside the shared accounts, nor to other machi
   nrLogin.clear();
   nrLogin.tokenRequests.length = 0;
   nrRemote.tokenRequests.length = 0;
-  let r = await c.post('/api/backup/run');
+  const r = await c.post('/api/backup/run');
   assert.equal(r.body.ok, true, r.body.message);
-  assert.equal(r.body.message, 'Backed up 1 of 3 instances (2 failed).');
-  assert.equal(r.body.instances.find((i) => i.name === 'Not shared').error, 'not using the shared accounts, no login sent');
-  assert.equal(r.body.instances.find((i) => i.name === 'Remote').error, 'not using the shared accounts, no login sent');
-  assert.equal(r.body.instances.find((i) => i.name === 'Open').ok, true);
-  assert.equal(nrLogin.tokenRequests.length, 0);
-  assert.equal(nrRemote.tokenRequests.length, 0);
-  assert.equal(nrLogin.find('GET', '/flows').length, 0, 'not even tried without a login');
-
-  // A hand-set login is held back the same way.
-  await c.put('/api/backup', { loginUser: 'backup', loginPassword: 'backup-pw-123' });
-  await sleep(1100);
-  r = await c.post('/api/backup/run');
-  assert.equal(nrLogin.tokenRequests.length + nrRemote.tokenRequests.length, 0);
-  await c.put('/api/backup', { loginUser: '' });
-
-  // Marked in instances.json: the remote one gets the login.
-  srv.writeJson('instances.json', [
-    { name: 'Not shared', port: nrLogin.port, sharedLogins: false },
-    { name: 'Remote', host: '127.0.0.1', port: nrRemote.port, sharedLogins: true },
-  ]);
-  await sleep(1100);
-  r = await c.post('/api/backup/run');
-  assert.equal(r.body.ok, true, r.body.message);
-  assert.equal(r.body.instances.find((i) => i.name === 'Remote').ok, true);
-  assert.equal(nrRemote.tokenRequests.length, 1);
-  assert.equal(nrRemote.tokenRequests[0].username, BACKUP_USER);
-  assert.equal(nrLogin.tokenRequests.length, 0);
+  // All three online instances are included, not just the ones marked shared.
+  assert.equal(r.body.message, 'Backed up 3 of 3 instances.');
+  for (const name of ['Not shared', 'Remote', 'Open']) {
+    assert.equal(r.body.instances.find((i) => i.name === name).ok, true, name);
+  }
+  // The login-required ones were logged into as the read-only backup account,
+  // never the administrator; the open one got no login.
+  assert.equal(nrLogin.tokenRequests.at(-1).username, BACKUP_USER);
+  assert.equal(nrRemote.tokenRequests.at(-1).username, BACKUP_USER);
+  for (const nr of [nrLogin, nrRemote]) assert.ok(nr.tokenRequests.every((t) => t.username !== ADMIN && t.password !== ADMIN_PW));
+  assert.equal(nrOpen.find('GET', '/flows').at(-1).headers.authorization, undefined, 'an open instance gets no login');
 });
 
 test('every instance failing records a failed run', async () => {

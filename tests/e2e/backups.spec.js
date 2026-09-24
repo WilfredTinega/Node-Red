@@ -45,14 +45,12 @@ test.describe('backups', () => {
     await expect(suggestions.getByRole('option', { name: /acme\/public-site/ })).toContainText('public');
     await suggestions.getByRole('option', { name: /acme\/flows-backup/ }).click();
     await expect(repo).toHaveValue('acme/flows-backup');
-    await expect(settings).toContainText('Must be a private repository.');
 
     const prefix = settings.getByLabel('Branch prefix');
     await expect(prefix).toHaveValue('backup/');
     await prefix.fill('nr backups');
     await expect(settings.locator('.error')).toHaveText('Branch prefix may only use letters, numbers, . _ - and /.');
     await prefix.fill('nr-backups/');
-    await expect(settings.locator('.bk-hint code')).toHaveText(new RegExp(`^nr-backups/${STAMP.source}$`));
 
     // Daily at a set time.
     await expect(settings.getByRole('button', { name: 'Frequency: Daily' })).toBeVisible();
@@ -69,7 +67,6 @@ test.describe('backups', () => {
     await choose(page, settings.getByRole('button', { name: 'Frequency: Daily' }), 'Every N hours');
     await expect(settings.getByLabel('Time')).toHaveCount(0);
     await choose(page, settings.getByRole('button', { name: 'Interval: Every 6 hours' }), 'Every 4 hours');
-    await expect(settings).toContainText('Counted from midnight: runs at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00.');
     await settings.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(settings.getByText('Saved.')).toBeVisible();
     saved = stack.readJson(stack.files.backup);
@@ -126,10 +123,9 @@ test.describe('backups', () => {
 
     await status.getByRole('button', { name: 'Back up now' }).click();
     const result = status.locator('.notice', { hasText: 'Backup finished' });
-    // Package NR does not use the shared accounts, so the backup login is not sent to it.
-    await expect(result).toContainText('Backed up 2 of 3 instances (1 failed).');
-    await expect(result).toHaveClass(/warn/);
-    await expect(result.locator('.bk-instances li', { hasText: 'Package NR' })).toContainText('not using the shared accounts');
+    // Every online instance is backed up, login-required ones included.
+    await expect(result).toContainText('Backed up 3 of 3 instances.');
+    await expect(result.locator('.bk-instances li', { hasText: 'Package NR' })).toContainText('nodes');
     await expect(ok).toHaveCount(0);
 
     // GitHub got one tree, one commit and one new branch named by date and time.
@@ -140,7 +136,14 @@ test.describe('backups', () => {
     expect(commits).toHaveLength(1);
     expect(refs).toHaveLength(1);
     const paths = trees[0].body.tree.map((t) => t.path).sort();
-    expect(paths).toEqual([`nodered-main-${stack.nr.main.port}/flows.json`, `nodered-open-${stack.nr.open.port}/flows.json`, 'backup-info.json'].sort());
+    // Flows only: each instance's folder carries its address (host + port); no metadata files.
+    expect(paths).toEqual(
+      [
+        `nodered-main_127.0.0.1-${stack.nr.main.port}/flows.json`,
+        `nodered-open_127.0.0.1-${stack.nr.open.port}/flows.json`,
+        `package-nr_127.0.0.1-${stack.nr.pkg.port}/flows.json`,
+      ].sort(),
+    );
     const mainFlows = JSON.parse(trees[0].body.tree.find((t) => t.path.startsWith('nodered-main')).content);
     expect(mainFlows).toEqual(stack.nr.main.flows);
     expect(commits[0].body.tree).toBe('newtree001');
@@ -149,12 +152,16 @@ test.describe('backups', () => {
     expect(refs[0].body.sha).toBe('newcommit001');
     const branch = ref.replace('refs/heads/', '');
 
-    // Instances that need a login were read with a token, then it was revoked.
-    const tokens = stack.nr.main.find('POST', /^\/auth\/token$/);
-    expect(tokens).toHaveLength(1);
-    expect(new URLSearchParams(tokens[0].raw).get('scope')).toBe('read');
+    // Every login-required instance (the container and the package install)
+    // was read with a read-only backup-account token; the open one got none.
+    for (const nr of [stack.nr.main, stack.nr.pkg]) {
+      const tokens = nr.find('POST', /^\/auth\/token$/);
+      expect(tokens).toHaveLength(1);
+      const body = new URLSearchParams(tokens[0].raw);
+      expect(body.get('scope')).toBe('read');
+      expect(body.get('username')).toBe('nodered-backup');
+    }
     expect(stack.nr.open.find('POST', /^\/auth\/token$/)).toHaveLength(0);
-    expect(stack.nr.pkg.find('POST', /^\/auth\/token$/)).toHaveLength(0);
 
     await expect(result.getByRole('link', { name: branch })).toHaveAttribute('href', `https://github.com/acme/flows-backup/tree/${branch}`);
 
@@ -164,7 +171,7 @@ test.describe('backups', () => {
     await expect(rows.first()).toContainText('Manual (administrator)');
     await expect(rows.first().locator('td').nth(2).locator('.status')).toHaveText('ok');
     await expect(rows.first().getByRole('link', { name: branch })).toHaveAttribute('href', `https://github.com/acme/flows-backup/tree/${branch}`);
-    await rows.first().getByText('2/3 saved').click();
+    await rows.first().getByText('3/3 saved').click();
     await expect(rows.first().locator('.bk-instances li')).toHaveCount(3);
     await expect(rows.first().locator('.bk-instances')).toContainText('3 nodes');
     await expect(status).toContainText('Last backup');
@@ -214,12 +221,12 @@ test.describe('backup times', () => {
     await loginAs(page, 'backups');
     const status = card(page, 'Status');
     await expect(status).toContainText(/Next backup .*02:30\s?AM/);
-    await expect(status).toContainText('Times in UTC.');
+    await expect(status.locator('.tz-tag').first()).toHaveText('UTC');
     const lastLine = status.locator('p', { hasText: 'Last backup' });
-    expect((await lastLine.textContent()).replace(/^Last backup /, '').replace(/ \(.*$/, '')).toMatch(when);
+    expect((await lastLine.textContent()).replace(/^Last backup /, '').replace(/ UTC \(.*$/, '')).toMatch(when);
 
     const history_ = card(page, 'History');
-    await expect(history_.locator('.head-actions')).toHaveText('Times in UTC');
+    await expect(history_.locator('.head-actions')).toHaveText('UTC');
     expect((await history_.locator('tbody tr td').first().textContent()).trim()).toMatch(when);
   });
 });

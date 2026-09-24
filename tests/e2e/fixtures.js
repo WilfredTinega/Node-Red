@@ -55,7 +55,7 @@ export async function loginAs(page, hash = 'instances', { username = ADMIN.usern
 // Logs in through the form.
 export async function loginWithForm(page, username, password) {
   await page.getByLabel('Username').fill(username);
-  await page.getByLabel('Password').fill(password);
+  await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Log in' }).click();
 }
 

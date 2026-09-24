@@ -81,6 +81,18 @@ export function formatWhen(iso, timeZone) {
   }
 }
 
+// A short timezone abbreviation (e.g. "UTC", "GMT+3") for the given zone, to
+// render as a compact suffix beside a formatted time.
+export function zoneAbbrev(timeZone, iso) {
+  if (!timeZone) return '';
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' }).formatToParts(iso ? new Date(iso) : new Date());
+    return parts.find((p) => p.type === 'timeZoneName')?.value || timeZone;
+  } catch {
+    return timeZone;
+  }
+}
+
 export function timeAgo(iso) {
   if (!iso) return '';
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
@@ -269,13 +281,20 @@ export function ConfirmDialog({ title, children, confirmLabel, busyLabel, danger
   );
 }
 
-// A password box with an eye button that shows or hides what was typed.
-export function PasswordInput({ value, onChange, autoComplete = 'current-password', ...rest }) {
+// A labelled password box with an eye button that shows or hides what was
+// typed. The button sits outside the <label>, so the field's accessible name
+// stays just the label text.
+export function PasswordInput({ label, value, onChange, autoComplete = 'current-password', ...rest }) {
   const [shown, setShown] = useState(false);
+  const id = useId();
   return (
-    <span className="password-field">
-      <input type={shown ? 'text' : 'password'} value={value} onChange={onChange} autoComplete={autoComplete} {...rest} />
-      <button
+    <div className="field">
+      <label htmlFor={id} className="field-label">
+        {label}
+      </label>
+      <span className="password-field">
+        <input id={id} type={shown ? 'text' : 'password'} value={value} onChange={onChange} autoComplete={autoComplete} {...rest} />
+        <button
         type="button"
         className="ghost icon-button eye"
         onClick={() => setShown((s) => !s)}
@@ -283,9 +302,10 @@ export function PasswordInput({ value, onChange, autoComplete = 'current-passwor
         aria-pressed={shown}
         title={shown ? 'Hide password' : 'Show password'}
       >
-        <Icon name={shown ? 'eye-off' : 'eye'} />
-      </button>
-    </span>
+          <Icon name={shown ? 'eye-off' : 'eye'} />
+        </button>
+      </span>
+    </div>
   );
 }
 

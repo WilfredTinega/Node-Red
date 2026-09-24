@@ -1,0 +1,24 @@
+[Unit]
+Description=Node-RED admin host agent (restart/update/connect for host-installed Node-RED)
+After=network.target
+
+[Service]
+Type=simple
+# Root, because it restarts services, installs Node-RED and edits settings.js.
+# Its API is limited to those three actions; read host-agent.js before enabling.
+User=root
+ExecStart=/usr/bin/node /opt/nodered-admin-agent/host-agent.js
+Restart=on-failure
+# Make the socket reachable by the dashboard: the dashboard container mounts
+# the socket's directory. Set a token shared with the dashboard if you prefer.
+Environment=HOST_AGENT_SOCKET=/run/nodered-admin/agent.sock
+# The dashboard's uid (Dockerfile ARG UID). The socket is handed to it.
+Environment=DASHBOARD_UID=10001
+# Environment=HOST_AGENT_TOKEN=change-me
+RuntimeDirectory=nodered-admin
+# 0755 so the dashboard's uid can traverse to its 0600 socket; the socket itself
+# is owned by that uid, so other users still cannot connect.
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { api } from '../api.js';
 import Select from '../Select.jsx';
-import { Card, ErrorText, Notice, PageHeader, Status, formatWhen, timeAgo, useAction, useLoad } from '../ui.jsx';
+import { Card, ErrorText, Notice, PageHeader, Status, formatWhen, timeAgo, useAction, useLoad, zoneAbbrev } from '../ui.jsx';
 import { RepoPicker, useRepos } from './GithubPage.jsx';
 import './BackupsPage.css';
 
@@ -30,28 +30,6 @@ function prefixError(p) {
     return 'Branch prefix may only use letters, numbers, . _ - and /.';
   }
   return '';
-}
-
-// The same stamp the server puts in branch names, in the server's timezone.
-function branchStamp(date, timeZone) {
-  try {
-    const parts = Object.fromEntries(
-      new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
-        .formatToParts(date)
-        .map((p) => [p.type, p.value]),
-    );
-    return `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}`;
-  } catch {
-    const d = date;
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
-  }
-}
-
-function hoursHint(every) {
-  const times = [];
-  for (let h = 0; h < 24; h += every) times.push(`${pad(h)}:00`);
-  const list = times.length <= 6 ? times.join(', ') : `${times.slice(0, 3).join(', ')} … ${times[times.length - 1]}`;
-  return `Counted from midnight: runs at ${list}.`;
 }
 
 function formatDuration(ms) {
@@ -95,7 +73,7 @@ export default function BackupsPage({ onAuthError }) {
 
   return (
     <>
-      <PageHeader title="Backups" subtitle="The flows of every online instance, saved as a new branch in a private GitHub repository." />
+      <PageHeader title="Backups" />
       {!state && (backup.error ? <Notice kind="error">{backup.error}</Notice> : <p className="muted">Loading…</p>)}
       {state && (
         <>
@@ -149,7 +127,8 @@ function StatusCard({ state, reload, setState, onAuthError }) {
   else
     line = (
       <span>
-        Next backup <strong>{formatWhen(state.nextRunAt, state.timezone)}</strong> <span className="muted">({timeAgo(state.nextRunAt)})</span>
+        Next backup <strong>{formatWhen(state.nextRunAt, state.timezone)}</strong>
+        {state.timezone && <span className="tz-tag"> {zoneAbbrev(state.timezone, state.nextRunAt)}</span>} <span className="muted">({timeAgo(state.nextRunAt)})</span>
       </span>
     );
 
@@ -175,10 +154,10 @@ function StatusCard({ state, reload, setState, onAuthError }) {
         <p>{line}</p>
         {last && !running && (
           <p className="muted">
-            Last backup {formatWhen(last.at, tz)} ({timeAgo(last.at)}): {last.ok ? 'ok' : 'failed'}
+            Last backup {formatWhen(last.at, tz)}
+            {tz && <span className="tz-tag"> {zoneAbbrev(tz, last.at)}</span>} ({timeAgo(last.at)}): {last.ok ? 'ok' : 'failed'}
           </p>
         )}
-        {tz && (state.nextRunAt || last) && !running && <p className="muted small-text">Times in {tz}.</p>}
       </div>
       {test.error && <Notice kind="error">{test.error}</Notice>}
       {testResult && (
@@ -312,12 +291,11 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
     if (m && Number(m[1]) < 24) set({ time: `${pad(Number(m[1]))}:${m[2]}` });
   }
 
-  const example = `${form.branchPrefix.trim()}${branchStamp(saved.nextRunAt ? new Date(saved.nextRunAt) : new Date(), saved.timezone)}`;
   const loginAs = saved.loginUser && saved.loginSet ? saved.loginUser : saved.defaultLoginUser;
 
   const timeField = (
     <div className="field bk-time">
-      <label htmlFor={ids.time}>Time</label>
+      <label htmlFor={ids.time}>Time{saved.timezone ? ` (${zoneAbbrev(saved.timezone)})` : ''}</label>
       <input
         id={ids.time}
         value={form.time}
@@ -354,9 +332,7 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
               <p className="error">{picked.fullName} is public. Backups are refused for public repositories.</p>
             ) : picked && !picked.canPush ? (
               <p className="error">The connected account cannot write to {picked.fullName}.</p>
-            ) : (
-              <p className="bk-hint">Must be a private repository.</p>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -372,15 +348,7 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
             aria-invalid={Boolean(shown.branchPrefix) || undefined}
             aria-describedby={ids.prefixMsg}
           />
-          <div id={ids.prefixMsg}>
-            {shown.branchPrefix ? (
-              <p className="error">{shown.branchPrefix}</p>
-            ) : (
-              <p className="bk-hint">
-                Each backup creates a branch like <code>{example}</code>
-              </p>
-            )}
-          </div>
+          <div id={ids.prefixMsg}>{shown.branchPrefix && <p className="error">{shown.branchPrefix}</p>}</div>
         </div>
 
         <div className="field">
@@ -406,26 +374,12 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
           <div id={ids.timeMsg}>
             {shown.time && <p className="error">{shown.time}</p>}
             {['mode', 'everyHours', 'weekday'].map((f) => shown[f] && <p key={f} className="error">{shown[f]}</p>)}
-            {form.mode !== 'off' && (
-              <p className="bk-hint">
-                {form.mode === 'hours' && `${hoursHint(form.everyHours)} `}
-                Times are in {saved.timezone || 'the server timezone'}.
-              </p>
-            )}
           </div>
         </div>
 
         <fieldset className="bk-login">
           <legend>Instance login</legend>
-          <p className="bk-hint">
-            {loginAs ? (
-              <>
-                Instances that need a login are read as <strong>{loginAs}</strong>.
-              </>
-            ) : (
-              'No default login is available, so instances that need a login are skipped unless you set one here.'
-            )}
-          </p>
+          {!loginAs && <p className="error">No default login is available; instances that need a login are skipped unless you set one here.</p>}
           <div className="bk-login-row">
             <div className="field">
               <label htmlFor={ids.user}>Username</label>
@@ -454,9 +408,6 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
           </div>
           {shown.loginPassword && <p className="error">{shown.loginPassword}</p>}
           {!saved.canStoreSecrets && <p className="error">The password key is missing, so a login password cannot be stored.</p>}
-          {saved.loginUser && saved.defaultLoginUser && (
-            <p className="bk-hint">Clear the username to use {saved.defaultLoginUser} again.</p>
-          )}
         </fieldset>
 
         {serverError?.field === 'form' && <ErrorText>{serverError.message}</ErrorText>}
@@ -483,7 +434,7 @@ function SettingsCard({ saved, setSaved, onAuthError }) {
 // Times are shown in the server's timezone, the one the branch names use.
 function HistoryCard({ history, timeZone }) {
   return (
-    <Card className="bk-card" title="History" actions={timeZone && history.length > 0 ? <span className="muted small-text">Times in {timeZone}</span> : undefined}>
+    <Card className="bk-card" title="History" actions={timeZone && history.length > 0 ? <span className="tz-tag">{zoneAbbrev(timeZone)}</span> : undefined}>
       {history.length === 0 ? (
         <p className="muted">No backups yet.</p>
       ) : (

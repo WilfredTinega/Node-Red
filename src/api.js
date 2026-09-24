@@ -36,6 +36,10 @@ export const api = {
   listInstances: () => request('GET', '/api/instances'),
   restartInstance: (id) => request('POST', `/api/instances/${enc(id)}/restart`, {}),
   updateInstance: (id) => request('POST', `/api/instances/${enc(id)}/update`, {}),
+  connectInstance: (id) => request('POST', `/api/instances/${enc(id)}/connect`, {}),
+  restartHost: (port) => request('POST', `/api/hosts/${enc(port)}/restart`, {}),
+  updateHost: (port) => request('POST', `/api/hosts/${enc(port)}/update`, {}),
+  connectHost: (port) => request('POST', `/api/hosts/${enc(port)}/connect`, {}),
 
   listUsers: () => request('GET', '/api/users'),
   viewPassword: (username) => request('GET', `/api/users/${enc(username)}/password`),

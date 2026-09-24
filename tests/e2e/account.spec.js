@@ -7,7 +7,6 @@ test.describe('my account', () => {
     await expect(profile).toContainText('administrator');
     await expect(profile).toContainText('Full access (admin)');
     await expect(profile).toContainText('All instances');
-    await expect(page.locator('.notice')).toContainText('built-in administrator account');
   });
 
   test('change your own password, then log in with it', async ({ page, stack }) => {
@@ -63,7 +62,7 @@ test.describe('my account', () => {
     await button.click();
     const dialog = page.getByRole('dialog', { name: 'Give up full access?' });
     await expect(dialog).toContainText('read only on this dashboard and on every instance, immediately');
-    await expect(dialog).toContainText('Only an admin can give you full access back.');
+    await expect(dialog).toContainText('Only an admin can restore it.');
     // Cancel changes nothing, and focus returns to the button.
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toBeHidden();
@@ -89,9 +88,9 @@ test.describe('my account', () => {
 
   test('the administrator cannot give up full access', async ({ page, stack }) => {
     await loginAs(page, 'account');
-    const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Full access' }) });
-    await expect(card).toContainText('This account always keeps full access.');
-    await expect(card.getByRole('button')).toHaveCount(0);
+    // The built-in administrator has no Full access card / demote button at all.
+    await expect(page.getByRole('heading', { name: 'Full access' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Give up full access' })).toHaveCount(0);
     const res = await page.request.post('/api/me/demote', { headers: { 'X-Requested-With': 'fetch' }, data: {} });
     expect(res.status()).toBe(400);
     expect((await res.json()).error).toBe('administrator cannot give up full access.');

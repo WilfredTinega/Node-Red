@@ -68,15 +68,24 @@ test('Node-RED instances only ever see reads, and a read-only login for backups'
   assert.deepEqual(d.mutations().map((m) => `${m.method} ${m.url.split('?')[0]}`), [`POST /containers/${c0.Id.slice(0, 12)}/restart`]);
 });
 
-// A guard against future edits: the backend never names a flows file, settings.js,
-// a .config file or a Node-RED userDir, and every file write goes to a known target.
+// A guard against future edits: no file here writes flows or credentials, and
+// every fs write goes to a known dashboard target. settings.js is edited only
+// by Connect (docker.js), only appending a shared-accounts block after a backup.
 test('backend source: no writes to Node-RED files, no non-GET flow requests', () => {
   const files = ['server.js', 'backup.js', 'github.js', 'docker.js', 'self-update.js', 'nodered/adminAuth.js'];
   for (const f of files) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
     const code = src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
-    assert.doesNotMatch(code, /flows_cred|\.config\.[a-z]+\.json|\.node-red|['"`]\/data\b/, `${f} names a Node-RED file`);
-    assert.doesNotMatch(code, /settings\.js\b/, `${f} names settings.js in code`); // settings.json is the dashboard's own
+    // Flows and credentials are never named anywhere.
+    assert.doesNotMatch(code, /flows_cred|\.config\.[a-z]+\.json|\.node-red/, `${f} names a Node-RED flows/credentials file`);
+    // Only docker.js's Connect may name settings.js / /data, and only guarded by a backup.
+    if (f === 'docker.js') {
+      assert.match(code, /grep -q "nodered-user-admin: shared accounts"/, 'docker.js connect must be idempotent');
+      assert.match(code, /cp "\$f" "\$f\.bak-/, 'docker.js connect must back up settings.js before editing');
+      assert.doesNotMatch(code, /flows/, 'docker.js connect must not touch flows');
+    } else {
+      assert.doesNotMatch(code, /settings\.js\b|['"`]\/data\b/, `${f} names settings.js or /data`);
+    }
     // fetch(`…/flows`…) calls: none may carry a method.
     for (const m of code.matchAll(/fetch\(`[^`]*\/flows?[`/?][^;]*/g)) assert.doesNotMatch(m[0], /method\s*:/, `${f}: ${m[0].slice(0, 80)}`);
     const writes = [...code.matchAll(/fs\.(writeFileSync|renameSync|rmSync|unlinkSync|appendFileSync|mkdirSync|copyFileSync|chmodSync)\(([^,)]+)/g)].map((m) => m[2].trim());
@@ -84,4 +93,11 @@ test('backend source: no writes to Node-RED files, no non-GET flow requests', ()
     for (const t of writes) assert.ok(known.includes(t), `${f} writes to ${t}`);
   }
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'backup.js'), 'utf8'), /['"]POST['"][^\n]*\/flows/);
+
+  // The host agent (the privileged deliverable) edits settings.js too — assert
+  // it backs up first and never touches flows or credentials.
+  const agentSrc = fs.readFileSync(path.join(ROOT, 'host-agent', 'host-agent.js'), 'utf8');
+  const agentCode = agentSrc.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.doesNotMatch(agentCode, /flows_cred|flows\.json|\.config\.[a-z]+\.json/, 'host agent must not name flows/credentials in code');
+  assert.match(agentCode, /copyFileSync\(settings, backup\)/, 'host agent must back up settings.js before editing');
 });

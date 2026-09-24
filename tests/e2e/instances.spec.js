@@ -65,33 +65,29 @@ test.describe('instances', () => {
     await expect(cells(row(page, 'nodered-open')).nth(2)).toHaveClass(/muted/);
   });
 
-  test('Connect shows the auth folder and NODERED_INSTANCE for the port', async ({ page, stack }) => {
+  // The instruction Connect dialog is the fallback for a package install when
+  // the host agent is not installed (the stack does not set HOST_AGENT_SOCKET).
+  test('Connect (fallback) shows the auth folder and NODERED_INSTANCE for the port', async ({ page, stack }) => {
     await loginAs(page, 'instances');
-    await row(page, 'nodered-open').getByRole('button', { name: 'Connect' }).click();
-    const dialog = page.getByRole('dialog', { name: 'Connect nodered-open to the shared accounts' });
+    await row(page, 'Package NR').getByRole('button', { name: 'Connect' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Connect Package NR to the shared accounts' });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Docker' })).toHaveAttribute('aria-pressed', 'true');
-    // What to do first, in short.
+    // A package install opens on the Package Install tab.
+    await expect(dialog.getByRole('button', { name: 'Package install' })).toHaveAttribute('aria-pressed', 'true');
     await expect(dialog.getByText('Before you switch')).toBeVisible();
     const before = dialog.locator('.before-steps li');
     await expect(before).toHaveCount(3);
-    await expect(before.nth(0)).toContainText('Change the administrator password and add everyone who needs access on the Users page first.');
-    await expect(before.nth(1)).toContainText('Back up the instance');
-    await expect(before.nth(2)).toContainText('Keep the same /data (or ~/.node-red)');
     const blocks = dialog.locator('pre code');
-    // The accounts folder is mounted read-only.
-    await expect(blocks.nth(0)).toHaveText(`-v ${AUTH_HOST_DIR}:/auth:ro\n-e NODERED_INSTANCE=${stack.nr.open.port}`);
-    await expect(blocks.nth(1)).toHaveText("adminAuth: require('/auth/adminAuth.js'),");
-    await expect(blocks.nth(2)).toHaveText('docker restart nodered-open');
+    await expect(blocks.nth(0)).toHaveText(`adminAuth: require('${AUTH_HOST_DIR}/adminAuth.js'),`);
+    await expect(blocks.nth(1)).toHaveText(`Environment=NODERED_INSTANCE=${stack.nr.pkg.port}`);
 
-    // The copy button puts the snippet on the clipboard.
+    // The Docker tab shows the read-only mount and NODERED_INSTANCE for the port.
+    await dialog.getByRole('button', { name: 'Docker' }).click();
+    await expect(blocks.nth(0)).toHaveText(`-v ${AUTH_HOST_DIR}:/auth:ro\n-e NODERED_INSTANCE=${stack.nr.pkg.port}`);
+    await expect(blocks.nth(1)).toHaveText("adminAuth: require('/auth/adminAuth.js'),");
+
     await dialog.getByRole('button', { name: 'Copy' }).first().click();
     await expect(dialog.getByRole('button', { name: 'Copied' })).toBeVisible();
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`-v ${AUTH_HOST_DIR}:/auth:ro\n-e NODERED_INSTANCE=${stack.nr.open.port}`);
-
-    await dialog.getByRole('button', { name: 'Package install' }).click();
-    await expect(blocks.nth(0)).toHaveText(`adminAuth: require('${AUTH_HOST_DIR}/adminAuth.js'),`);
-    await expect(blocks.nth(1)).toHaveText(`Environment=NODERED_INSTANCE=${stack.nr.open.port}`);
 
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();

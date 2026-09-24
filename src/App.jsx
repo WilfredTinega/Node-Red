@@ -147,10 +147,7 @@ function Login({ onLogin }) {
           Username
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required autoFocus />
         </label>
-        <label>
-          Password
-          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
+        <PasswordInput label="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         {lockLeft ? (
           <p className="error" role="status">
             Too many failed attempts. Try again in <strong>{formatCountdown(lockLeft)}</strong>.

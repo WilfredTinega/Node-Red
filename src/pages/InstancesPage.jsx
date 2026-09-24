@@ -8,36 +8,41 @@ const LOGIN_LABELS = { required: 'Login required', open: 'No login' };
 
 const kindOf = (i) => (i.source === 'docker' ? 'docker' : i.host ? 'remote' : 'package');
 const rowKey = (i) => `${i.source}-${i.container || ''}-${i.host || ''}-${i.port}-${i.name}`;
+const rowBusyKey = (i) => i.container || `host-${i.port}`;
 
 export default function InstancesPage({ me, onAuthError }) {
   const { data, error, loading, reload } = useLoad(api.listInstances, onAuthError, 30000);
-  const [confirm, setConfirm] = useState(null); // { action: 'restart' | 'update', instance }
-  const [dialog, setDialog] = useState(null); // { type: 'package-update' | 'connect', instance }
-  const [busy, setBusy] = useState({}); // container id -> 'restart' | 'update'
-  const [results, setResults] = useState([]); // [{ id, ok, text }]
+  const [confirm, setConfirm] = useState(null); // { action: 'restart' | 'update' | 'connect', instance }
+  const [dialog, setDialog] = useState(null); // { type: 'package-update' | 'connect', instance }  (fallback when the host agent is absent)
+  const [busy, setBusy] = useState({}); // row key -> 'restart' | 'update' | 'connect'
+  const [results, setResults] = useState([]); // [{ id, ok, text, steps }]
 
   const host = data?.publicHost || window.location.hostname;
   const instances = data?.instances || [];
   const online = instances.filter((i) => i.status === 'online').length;
-  const canManage = me.admin && data?.canManageContainers;
+  const canManageContainers = me.admin && data?.canManageContainers;
+  const canManageHost = me.admin && data?.canManageHost;
 
   const runAction = useCallback(
     async (action, instance) => {
-      const id = instance.container;
+      const docker = Boolean(instance.container);
+      const key = rowBusyKey(instance);
       setConfirm(null);
-      setBusy((b) => ({ ...b, [id]: action }));
-      const resultId = `${Date.now()}-${id}`;
+      setBusy((b) => ({ ...b, [key]: action }));
+      const resultId = `${Date.now()}-${key}`;
+      const call = docker
+        ? { restart: api.restartInstance, update: api.updateInstance, connect: api.connectInstance }[action].bind(null, instance.container)
+        : { restart: api.restartHost, update: api.updateHost, connect: api.connectHost }[action].bind(null, instance.port);
       try {
-        const res = await (action === 'restart' ? api.restartInstance(id) : api.updateInstance(id));
-        const text = action === 'restart' ? `${instance.name}: ${res.message || 'Restarted.'}` : res.message || `${instance.name} updated.`;
-        setResults((r) => [{ id: resultId, ok: true, text }, ...r]);
+        const res = await call();
+        setResults((r) => [{ id: resultId, ok: true, text: `${instance.name}: ${res.message || 'Done.'}`, steps: res.steps }, ...r]);
       } catch (err) {
         onAuthError(err);
-        setResults((r) => [{ id: resultId, ok: false, text: `${instance.name}: ${err.message}` }, ...r]);
+        setResults((r) => [{ id: resultId, ok: false, text: `${instance.name}: ${err.message}`, steps: err.data?.steps }, ...r]);
       } finally {
         setBusy((b) => {
           const next = { ...b };
-          delete next[id];
+          delete next[key];
           return next;
         });
         reload();
@@ -63,7 +68,19 @@ export default function InstancesPage({ me, onAuthError }) {
 
       {results.map((r) => (
         <div key={r.id} className={`notice result ${r.ok ? 'ok' : 'error'}`} role="status">
-          <span>{r.text}</span>
+          <div className="result-body">
+            <span>{r.text}</span>
+            {r.steps?.length > 0 && (
+              <ul className="steps-result">
+                {r.steps.map((s, n) => (
+                  <li key={n} className={s.ok ? 'ok' : 'error'}>
+                    {s.ok ? '✓' : '✗'} {s.name}
+                    {s.detail ? ` — ${s.detail}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <button className="ghost small" onClick={() => setResults((all) => all.filter((x) => x.id !== r.id))}>
             Dismiss
           </button>
@@ -103,8 +120,9 @@ export default function InstancesPage({ me, onAuthError }) {
                     instance={i}
                     host={host}
                     admin={me.admin}
-                    canManage={canManage}
-                    busy={i.container ? busy[i.container] : undefined}
+                    canManageContainers={canManageContainers}
+                    canManageHost={canManageHost}
+                    busy={busy[rowBusyKey(i)]}
                     onConfirm={(action) => setConfirm({ action, instance: i })}
                     onDialog={(type) => setDialog({ type, instance: i })}
                   />
@@ -117,22 +135,24 @@ export default function InstancesPage({ me, onAuthError }) {
 
       {confirm?.action === 'restart' && (
         <ConfirmDialog title={`Restart ${confirm.instance.name}`} confirmLabel="Restart" onConfirm={() => runAction('restart', confirm.instance)} onClose={closeConfirm}>
-          <p>Restart the container? The editor and running flows stop for a few seconds.</p>
+          <p>The editor and running flows stop for a few seconds.</p>
         </ConfirmDialog>
       )}
       {confirm?.action === 'update' && (
         <ConfirmDialog title={`Update ${confirm.instance.name}`} confirmLabel="Update" onConfirm={() => runAction('update', confirm.instance)} onClose={closeConfirm}>
+          {confirm.instance.image && (
+            <p>
+              <code>{confirm.instance.image}</code>
+            </p>
+          )}
+          <p>Flows stop while it runs.</p>
+        </ConfirmDialog>
+      )}
+      {confirm?.action === 'connect' && (
+        <ConfirmDialog title={`Connect ${confirm.instance.name}`} confirmLabel="Connect" onConfirm={() => runAction('connect', confirm.instance)} onClose={closeConfirm}>
           <p>
-            Pulls the newest image for the container&apos;s current tag
-            {confirm.instance.image && (
-              <>
-                {' '}
-                (<code>{confirm.instance.image}</code>)
-              </>
-            )}{' '}
-            and recreates it with the same ports, volumes and settings. If the new container fails to start, the old one is restored.
+            Logins on {confirm.instance.name} will use the shared accounts. Its <code>settings.js</code> is backed up first, then it restarts.
           </p>
-          <p className="muted">This can take a few minutes. Flows stop while it runs.</p>
         </ConfirmDialog>
       )}
 
@@ -142,7 +162,7 @@ export default function InstancesPage({ me, onAuthError }) {
   );
 }
 
-function InstanceRow({ instance: i, host, admin, canManage, busy, onConfirm, onDialog }) {
+function InstanceRow({ instance: i, host, admin, canManageContainers, canManageHost, busy, onConfirm, onDialog }) {
   const kind = kindOf(i);
   const address = i.port ? `${i.host || (i.localOnly ? '127.0.0.1' : host)}:${i.port}` : null;
   const needsConnect = kind !== 'remote' && (i.login !== 'required' || i.sharedLogins === false);
@@ -192,7 +212,9 @@ function InstanceRow({ instance: i, host, admin, canManage, busy, onConfirm, onD
       {admin && (
         <td>
           <div className="actions">
-            {kind === 'docker' && canManage && i.container && (
+            {/* Live buttons when we can manage this kind: Docker via the proxy,
+                host installs via the host agent. Otherwise the instruction dialog. */}
+            {((kind === 'docker' && canManageContainers && i.container) || (kind === 'package' && canManageHost)) && (
               <>
                 <button className="ghost small" onClick={() => onConfirm('restart')} disabled={Boolean(busy)}>
                   {busy === 'restart' ? 'Restarting…' : 'Restart'}
@@ -200,15 +222,28 @@ function InstanceRow({ instance: i, host, admin, canManage, busy, onConfirm, onD
                 <button className="ghost small" onClick={() => onConfirm('update')} disabled={Boolean(busy)}>
                   {busy === 'update' ? 'Updating…' : 'Update'}
                 </button>
+                {needsConnect && (
+                  <button className="ghost small" onClick={() => onConfirm('connect')} disabled={Boolean(busy)}>
+                    {busy === 'connect' ? 'Connecting…' : 'Connect'}
+                  </button>
+                )}
               </>
             )}
-            {kind === 'package' && (
-              <button className="ghost small" onClick={() => onDialog('package-update')}>
-                Update…
-              </button>
+            {/* Fallback: no live management for this kind — show the manual steps. */}
+            {kind === 'package' && !canManageHost && (
+              <>
+                <button className="ghost small" onClick={() => onDialog('package-update')}>
+                  Update…
+                </button>
+                {needsConnect && (
+                  <button className="ghost small" onClick={() => onDialog('connect')}>
+                    Connect
+                  </button>
+                )}
+              </>
             )}
-            {needsConnect && (
-              <button className="ghost small" onClick={() => onDialog('connect')} disabled={Boolean(busy)}>
+            {kind === 'docker' && !canManageContainers && needsConnect && (
+              <button className="ghost small" onClick={() => onDialog('connect')}>
                 Connect
               </button>
             )}
@@ -241,8 +276,6 @@ function ConnectDialog({ instance, authHostDir, onClose }) {
 
   return (
     <Dialog title={`Connect ${instance.name} to the shared accounts`} onClose={onClose} wide>
-      <p>After this, logins on this instance use the accounts and access set on the Users page.</p>
-
       <p className="before-title">Before you switch</p>
       <ol className="steps before-steps">
         <li>

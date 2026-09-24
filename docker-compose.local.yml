@@ -40,6 +40,9 @@ services:
       - ./local-test/secrets:/secrets
       - ./local-test/config:/config:ro
       - /proc/1/net:/hostnet:ro
+      # The host agent's socket (host-agent/install.sh), for host-install actions.
+      # Present only if you installed the agent; harmless otherwise.
+      - /run/nodered-admin:/run/nodered-admin
     environment:
       PORT: "1881"
       PUBLIC_PORT: "1891" # the host port above, so the scan skips this page
@@ -49,6 +52,7 @@ services:
       DOCKER_API: http://docker-proxy:2375
       PROBE_HOST: host.docker.internal
       HOST_NET_DIR: /hostnet
+      HOST_AGENT_SOCKET: /run/nodered-admin/agent.sock
       SECURE_COOKIE: "0"
       # The local test instance keeps a known administrator password.
       DEFAULT_ADMIN_PASSWORD: oponde9422

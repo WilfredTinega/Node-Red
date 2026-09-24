@@ -290,7 +290,6 @@ function ViewableSetting({ settings, setSettings, onChanged, onAuthError }) {
             className="switch"
             aria-checked={on}
             aria-labelledby={`${helpId}-label`}
-            aria-describedby={helpId}
             disabled={busy || !canStore}
             onClick={() => {
               setError('');
@@ -303,18 +302,12 @@ function ViewableSetting({ settings, setSettings, onChanged, onAuthError }) {
           </button>
         </span>
       </div>
-      <p className="muted small-text" id={helpId}>
-        {canStore
-          ? 'Off: only the password hash is stored (default). On: an encrypted copy is kept so admins can click Show.'
-          : 'The password key is missing, so passwords cannot be stored viewable. Only hashes are kept.'}
-      </p>
       <ErrorText>{!asking && error}</ErrorText>
       {asking && (
         <ConfirmDialog title="Turn off viewable passwords?" confirmLabel="Turn off" busyLabel="Turning off…" danger onConfirm={() => save(false)} onClose={() => setAsking(false)} error={error} busy={busy}>
           <p>
-            Every stored password copy is <strong>deleted now</strong>. Show stops working for all accounts; passwords set from now on are kept as hashes only.
+            Every stored password copy is <strong>deleted now</strong> and Show stops working.
           </p>
-          <p className="muted">Logins are not affected. Reset a password to hand it out again.</p>
         </ConfirmDialog>
       )}
     </div>
@@ -425,7 +418,6 @@ function InstanceAccessChoice({ value, onChange, knownKeys = [], onAuthError, di
         <input type="radio" name={name} checked={chosen} onChange={() => onChange({ ...lastMap.current })} />
         Only chosen instances
       </label>
-      {chosen && <p className="muted per-instance-note">{PER_INSTANCE_WHY}.</p>}
       {chosen && <InstanceRows value={value} onChange={onChange} knownKeys={knownKeys} onAuthError={onAuthError} />}
     </fieldset>
   );

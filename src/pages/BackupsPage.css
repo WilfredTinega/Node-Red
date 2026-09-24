@@ -1,6 +1,7 @@
 /* Backups page. Status dots and the repo picker come from GithubPage.css. */
 
 .bk-status p { margin: 0 0 4px; }
+.tz-tag { color: var(--muted); font-size: 12px; font-variant: all-small-caps; letter-spacing: 0.03em; }
 .bk-result { display: grid; gap: 4px; justify-items: start; color: var(--text); }
 .bk-result code { overflow-wrap: anywhere; }
 
